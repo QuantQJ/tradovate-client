@@ -65,8 +65,10 @@ in a default directory (`$XDG_STATE_HOME/tradovate-client`, overridable with
 ## Install
 
 ```sh
-pip install tradovate-client              # REST only, no dependencies
-pip install "tradovate-client[socket]"    # adds websocket-client
+pip install "git+https://github.com/QuantQJ/tradovate-client.git"
+
+# with the websocket extra
+pip install "tradovate-client[socket] @ git+https://github.com/QuantQJ/tradovate-client.git"
 ```
 
 ## Credentials
@@ -316,7 +318,7 @@ The detail that matters: Tradovate drops a connection idle for 2.5 seconds, so
 the client sends a keep-alive every 2. That is the part other Tradovate
 libraries miss.
 
-Needs `websocket-client`: `pip install "tradovate-client[socket]"`.
+Needs `websocket-client`: `pip install "tradovate-client[socket] @ git+https://github.com/QuantQJ/tradovate-client.git"`.
 
 ## Errors
 
