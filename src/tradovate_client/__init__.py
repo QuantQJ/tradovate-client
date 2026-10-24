@@ -36,9 +36,12 @@ from .models import (
     CashBalance,
     Contract,
     Fill,
+    FillFee,
+    FillPair,
     Order,
     Position,
     PositionView,
+    Product,
     Snapshot,
 )
 from .orders import build_bracket_leg, build_order
@@ -67,6 +70,9 @@ __all__ = [
     'Position',
     'PositionView',
     'Fill',
+    'FillFee',
+    'FillPair',
+    'Product',
     'Order',
     'Snapshot',
     'build_order',

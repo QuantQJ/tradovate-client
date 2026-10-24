@@ -199,6 +199,43 @@ client.place_oco(
 
 ### Changing and cancelling
 
+## What a trade cost, and what it made
+
+Commission is not the cost. Tradovate reports seven separate charges per fill
+and this reads all of them:
+
+```python
+client.cost_of_order(4242)
+# {'total': 1.22, 'fills': 2, 'fees': 2,
+#  'breakdown': {'clearing_fee': 0.14, 'exchange_fee': 0.74,
+#                'nfa_fee': 0.04, 'commission': 0.30},
+#  'fill_ids': [11, 12]}
+```
+
+Round trips come matched by the broker, not reassembled by you:
+
+```python
+client.round_trips("MNQ")
+# [{'id': 7, 'qty': 2, 'buy_price': 20100.0, 'sell_price': 20110.0,
+#   'points': 20.0, 'gross': 40.0, 'active': False}]
+```
+
+The dollar figure uses the contract's own `valuePerPoint`, fetched from
+Tradovate. Supply your own with `value_per_point=`, or pass neither and
+`gross` comes back `None` — this library will not invent a multiplier.
+
+```python
+pair = client.fill_pairs()[0]
+pair.points  # 20.0
+pair.gross(2.0)  # 40.0
+pair.net(2.0, client.fill_fees())  # gross less both legs' charges
+
+product = client.find_product("MNQ")
+product.value_per_point, product.tick_size, product.tick_value
+```
+
+## Changing and cancelling
+
 ```python
 client.modify(order_id, price=20160.00)
 client.cancel(order_id)

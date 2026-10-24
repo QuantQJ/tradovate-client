@@ -16,9 +16,12 @@ from .models import (
     CashBalance,
     Contract,
     Fill,
+    FillFee,
+    FillPair,
     Order,
     Position,
     PositionView,
+    Product,
     Snapshot,
 )
 
@@ -239,6 +242,139 @@ class TradovateClient:
             for d in (self._get('/fill/deps', masterid=int(order_id)) or [])
             if isinstance(d, dict)
         ]
+
+    # ── what it cost, and what it made ──────────────────────────────────────
+
+    def fill_fees(self) -> list[FillFee]:
+        """Every fee record on the account."""
+        return [
+            FillFee.from_api(d)
+            for d in (self._get('/fillFee/list') or [])
+            if isinstance(d, dict)
+        ]
+
+    def fill_fee(self, fee_id) -> FillFee:
+        d = self._get('/fillFee/item', id=int(fee_id))
+        if not isinstance(d, dict) or 'id' not in d:
+            raise NotFoundError('no fill fee %s' % fee_id, endpoint='/fillFee/item')
+        return FillFee.from_api(d)
+
+    def fill_fees_for_fill(self, fill_id) -> list[FillFee]:
+        """The charges on one fill.
+
+        Uses Tradovate's ``deps`` pattern -- the records dependent on a master
+        id -- the same way ``/fill/deps?masterid=<orderId>`` returns an
+        order's fills.
+        """
+        return [
+            FillFee.from_api(d)
+            for d in (self._get('/fillFee/deps', masterid=int(fill_id)) or [])
+            if isinstance(d, dict)
+        ]
+
+    def cost_of_order(self, order_id) -> dict:
+        """What one order actually cost, from the broker's own fee records.
+
+        The total, the per-charge breakdown, and the fills it covers. No
+        estimate and no rate card: a fill Tradovate reported no fees for
+        contributes nothing rather than a guess.
+
+            >>> client.cost_of_order(4242)            # doctest: +SKIP
+            {'total': 1.22, 'fills': 2, 'fees': 2,
+             'breakdown': {'commission': 1.22}, 'fill_ids': [11, 12]}
+        """
+        fills = self.fills_for_order(order_id)
+        fees = []
+        for fill in fills:
+            fees.extend(self.fill_fees_for_fill(fill.id))
+        breakdown: dict[str, float] = {}
+        for fee in fees:
+            for name, amount in fee.breakdown().items():
+                breakdown[name] = breakdown.get(name, 0.0) + amount
+        return {
+            'total': round(sum(f.total for f in fees), 10),
+            'fills': len(fills),
+            'fees': len(fees),
+            'breakdown': breakdown,
+            'fill_ids': [f.id for f in fills],
+        }
+
+    def fill_pairs(self) -> list[FillPair]:
+        """Every matched buy/sell -- the account's round trips."""
+        return [
+            FillPair.from_api(d)
+            for d in (self._get('/fillPair/list') or [])
+            if isinstance(d, dict)
+        ]
+
+    def fill_pair(self, pair_id) -> FillPair:
+        d = self._get('/fillPair/item', id=int(pair_id))
+        if not isinstance(d, dict) or 'id' not in d:
+            raise NotFoundError('no fill pair %s' % pair_id, endpoint='/fillPair/item')
+        return FillPair.from_api(d)
+
+    def fill_pairs_for_position(self, position_id) -> list[FillPair]:
+        """The round trips belonging to one position."""
+        return [
+            FillPair.from_api(d)
+            for d in (self._get('/fillPair/ldeps', masterids=int(position_id)) or [])
+            if isinstance(d, dict)
+        ]
+
+    # ── reference data, so prices mean money ────────────────────────────────
+
+    def products(self) -> list[Product]:
+        return [
+            Product.from_api(d)
+            for d in (self._get('/product/list') or [])
+            if isinstance(d, dict)
+        ]
+
+    def product(self, product_id) -> Product:
+        d = self._get('/product/item', id=int(product_id))
+        if not isinstance(d, dict) or 'id' not in d:
+            raise NotFoundError('no product %s' % product_id, endpoint='/product/item')
+        return Product.from_api(d)
+
+    def find_product(self, name) -> Product:
+        """A product by name, e.g. ``MNQ``.
+
+        Carries ``value_per_point`` and ``tick_size``, which is what turns a
+        move in points into a number of dollars.
+        """
+        d = self._get('/product/find', name=name)
+        if not isinstance(d, dict) or 'id' not in d:
+            raise NotFoundError('no product named %r' % name, endpoint='/product/find')
+        return Product.from_api(d)
+
+    def round_trips(self, product_name=None, *, value_per_point=None) -> list[dict]:
+        """Round trips with points, and money when a multiplier is available.
+
+        Give a ``product_name`` and the multiplier comes from Tradovate; give
+        ``value_per_point`` and yours is used; give neither and you get points
+        only, with ``gross`` left as None rather than invented.
+        """
+        if value_per_point is None and product_name:
+            value_per_point = self.find_product(product_name).value_per_point
+        out = []
+        for pair in self.fill_pairs():
+            out.append(
+                {
+                    'id': pair.id,
+                    'position_id': pair.position_id,
+                    'qty': pair.qty,
+                    'buy_price': pair.buy_price,
+                    'sell_price': pair.sell_price,
+                    'points': pair.points,
+                    'gross': (
+                        pair.gross(value_per_point)
+                        if value_per_point is not None
+                        else None
+                    ),
+                    'active': pair.active,
+                }
+            )
+        return out
 
     def orders(self) -> list[Order]:
         return [
