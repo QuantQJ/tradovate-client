@@ -10,7 +10,7 @@ from . import orders as _orders
 from ._http import Transport
 from .auth import RENEW_MARGIN_SECONDS, Credentials, TokenStore
 from .enums import Action, Env, OrderType, TimeInForce
-from .errors import AuthError, ConfigError, NotFoundError
+from .errors import AuthError, ConfigError, NotFoundError, raise_for_result
 from .models import (
     Account,
     CashBalance,
@@ -66,9 +66,8 @@ class TradovateClient:
         self._transport = Transport(
             self.env.rest_url, timeout=timeout, retries=retries, sleep=sleep
         )
-        self._tokens = token_store or TokenStore(
-            self.env, directory=token_dir, clock=clock
-        )
+        self._token_dir = token_dir
+        self._explicit_store = token_store
         self._account_hint = account
         self._account: Account | None = None
 
@@ -108,6 +107,22 @@ class TradovateClient:
             % self.CREDENTIAL_PATH_VAR
         )
 
+    @property
+    def _tokens(self) -> Any:
+        """The token cache, keyed by environment *and* login.
+
+        Built lazily because the login name comes from the credentials, and
+        resolving those must not happen in ``__init__``.
+        """
+        if self._explicit_store is None:
+            self._explicit_store = TokenStore(
+                self.env,
+                directory=self._token_dir,
+                clock=self._clock,
+                login=self.credentials.name,
+            )
+        return self._explicit_store
+
     def token(self, *, force=False) -> str:
         """A usable access token, renewed rather than re-requested when possible."""
         if not force:
@@ -140,6 +155,14 @@ class TradovateClient:
 
     def _post(self, path, body) -> Any:
         return self._transport.request('POST', path, token=self.token(), body=body)
+
+    def _order_post(self, path, body) -> Any:
+        """POST an order and check the result Tradovate puts in the payload.
+
+        Tradovate answers 200 and reports the outcome in ``failureReason``, so
+        a successful HTTP call is not a successful order.
+        """
+        return raise_for_result(self._post(path, body), endpoint=path)
 
     # ── reads ───────────────────────────────────────────────────────────────
 
@@ -429,7 +452,7 @@ class TradovateClient:
             order_type=order_type,
             **kw,
         )
-        return self._post('/order/placeorder', body)
+        return self._order_post('/order/placeorder', body)
 
     def market(self, action, symbol, qty, **kw) -> Any:
         return self.place(
@@ -513,7 +536,7 @@ class TradovateClient:
             **kw,
         )
         body['other'] = other
-        return self._post('/order/placeoco', body)
+        return self._order_post('/order/placeoco', body)
 
     def place_oso(
         self,
@@ -541,7 +564,7 @@ class TradovateClient:
         body['bracket1'] = bracket1
         if bracket2 is not None:
             body['bracket2'] = bracket2
-        return self._post('/order/placeoso', body)
+        return self._order_post('/order/placeoso', body)
 
     @staticmethod
     def bracket_leg(action, order_type, **kw) -> dict:
@@ -621,7 +644,7 @@ class TradovateClient:
             'customTag50': custom_tag_50,
             'isAutomated': bool(is_automated),
         }
-        return self._post('/order/modifyorder', body)
+        return self._order_post('/order/modifyorder', body)
 
     def cancel(
         self, order_id, *, client_order_id=None, custom_tag_50=None, is_automated=True
@@ -636,10 +659,18 @@ class TradovateClient:
             },
         )
 
-    def cancel_working(self) -> list[int]:
-        """Cancel every working order. Returns the ids it cancelled."""
+    def cancel_working(self, *, account=None) -> list[int]:
+        """Cancel working orders. Returns the ids it cancelled.
+
+        With ``account`` given, only that account's orders are touched. On a
+        login with several accounts this matters: cancelling everything would
+        reach into an account the caller did not name.
+        """
+        account_id = self.account(account).id if account is not None else None
         cancelled = []
         for order in self.working_orders():
+            if account_id is not None and order.account_id != account_id:
+                continue
             self.cancel(order.id)
             cancelled.append(order.id)
         return cancelled
@@ -667,7 +698,9 @@ class TradovateClient:
         """
         result: dict[str, list] = {'cancelled': [], 'liquidated': []}
         if cancel_first:
-            result['cancelled'] = self.cancel_working()
+            # Scoped to the account being flattened, so flattening one account
+            # does not cancel another's working orders.
+            result['cancelled'] = self.cancel_working(account=account)
         acct = self.account(account)
         for pos in self.positions(acct.id):
             if pos.is_flat:

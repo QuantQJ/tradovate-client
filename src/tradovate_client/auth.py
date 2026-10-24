@@ -10,6 +10,7 @@ authentication when it has no usable token at all.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -114,8 +115,12 @@ class TokenStore:
     to the live host.
     """
 
-    def __init__(self, env, *, directory=None, clock=time.time) -> None:
+    def __init__(self, env, *, directory=None, clock=time.time, login=None) -> None:
         self.env = Env(env)
+        # Keyed by login as well as environment. Two different logins sharing
+        # a token directory would otherwise read each other's token, which on
+        # the live host means trading the wrong account.
+        self.login = str(login) if login else None
         self.directory = (
             pathlib.Path(directory).expanduser() if directory else default_token_dir()
         )
@@ -123,6 +128,10 @@ class TokenStore:
 
     @property
     def path(self) -> pathlib.Path:
+        if self.login:
+            return self.directory / (
+                'token-%s-%s.json' % (self.env.value, _login_key(self.login))
+            )
         return self.directory / ('token-%s.json' % self.env.value)
 
     def read(self) -> tuple[str | None, float]:
@@ -131,6 +140,13 @@ class TokenStore:
             data = json.loads(self.path.read_text())
         except (OSError, ValueError):
             return None, 0.0
+        if data.get('env') and data['env'] != self.env.value:
+            return None, 0.0
+        if self.login and data.get('login') not in (
+            None,
+            _login_key(self.login),
+        ):
+            return None, 0.0  # someone else's token; ignore it
         token = data.get('accessToken')
         try:
             expires = float(data.get('expires_at') or 0.0)
@@ -149,6 +165,7 @@ class TokenStore:
             'expires_at': _expiry_of(reply, self._clock),
             'userId': reply.get('userId'),
             'env': self.env.value,
+            'login': _login_key(self.login) if self.login else None,
         }
         # Written through a private temp file and moved into place, so the
         # token is never momentarily readable by anyone else: O_EXCL means the
@@ -179,6 +196,14 @@ class TokenStore:
     def fresh_enough(self, margin=RENEW_MARGIN_SECONDS) -> bool:
         token, expires = self.read()
         return bool(token) and (expires - self._clock()) > margin
+
+
+def _login_key(login) -> str:
+    """A short, stable, non-reversible tag for a login name.
+
+    The username never appears in a filename; only a digest of it does.
+    """
+    return hashlib.blake2b(str(login).encode(), digest_size=6).hexdigest()
 
 
 def _expiry_of(reply, clock) -> float:

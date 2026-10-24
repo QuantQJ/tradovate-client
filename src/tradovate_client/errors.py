@@ -5,7 +5,14 @@ a caller might mistake for a successful result -- which is the single most
 common way an automated trading script places an order it did not mean to.
 """
 
+#: Tradovate reports an order's fate in ``failureReason`` on an HTTP 200.
+#: ``Success`` is one of the documented values, so the field being present
+#: does not mean the order failed -- only a value other than ``Success`` does.
+#: The full set is in Tradovate's own PlaceOrderResult model.
+SUCCESS_REASON = 'Success'
+
 __all__ = [
+    'SUCCESS_REASON',
     'TradovateError',
     'ConfigError',
     'TransportError',
@@ -13,7 +20,9 @@ __all__ = [
     'ThrottledError',
     'RequestError',
     'ServerError',
-    'NotFoundError',
+    'ServerError',
+    'OrderRejected',
+    'raise_for_result',
 ]
 
 
@@ -36,6 +45,43 @@ class TradovateError(Exception):
         if self.body not in (None, '', {}):
             bits.append('body=%r' % (self.body,))
         return ' | '.join(bits)
+
+
+class OrderRejected(TradovateError):
+    """Tradovate answered 200 and refused the order inside the payload.
+
+    ``reason`` is its own ``failureReason`` -- one of the documented values
+    such as ``MaxPosLimitReached`` or ``InvalidPrice`` -- and ``text`` is the
+    free-form ``failureText`` when it sends one.
+    """
+
+    def __init__(self, message, *, reason=None, text=None, **kw) -> None:
+        super().__init__(message, **kw)
+        self.reason = reason
+        self.text = text
+
+
+def raise_for_result(payload, endpoint=None):
+    """Raise if an order result carries a real rejection.
+
+    Tradovate answers 200 and puts the outcome in ``failureReason``. A missing
+    field, or the documented value ``Success``, both mean accepted; anything
+    else is a refusal. Checking only for the field's presence would reject
+    successful orders.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    reason = payload.get('failureReason')
+    if reason in (None, '', SUCCESS_REASON):
+        return payload
+    text = payload.get('failureText')
+    raise OrderRejected(
+        'Tradovate refused the order: %s%s' % (reason, ' (%s)' % text if text else ''),
+        reason=reason,
+        text=text,
+        endpoint=endpoint,
+        body=payload,
+    )
 
 
 class ConfigError(TradovateError):
