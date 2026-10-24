@@ -11,6 +11,7 @@ authentication when it has no usable token at all.
 import json
 import os
 import pathlib
+import tempfile
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -127,18 +128,30 @@ class TokenStore:
         if not token:
             raise AuthError('authentication reply carried no accessToken',
                             body=reply)
-        self.directory.mkdir(parents=True, exist_ok=True)
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         payload = {
             'accessToken': token,
             'expires_at': _expiry_of(reply, self._clock),
             'userId': reply.get('userId'),
             'env': self.env.value,
         }
-        tmp = self.path.with_suffix('.tmp')
-        tmp.write_text(json.dumps(payload))
-        os.chmod(tmp, 0o600)
-        tmp.replace(self.path)
-        os.chmod(self.path, 0o600)
+        # Written through a private temp file and moved into place, so the
+        # token is never momentarily readable by anyone else: O_EXCL means the
+        # file is this process's own, and the mode applies from creation
+        # rather than being corrected afterwards.
+        handle, tmp = tempfile.mkstemp(dir=str(self.directory),
+                                       prefix='.token-', suffix='.tmp')
+        try:
+            os.fchmod(handle, 0o600)
+            with os.fdopen(handle, 'w') as fh:
+                fh.write(json.dumps(payload))
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
         return token
 
     def clear(self):

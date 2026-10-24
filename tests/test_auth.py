@@ -101,3 +101,37 @@ def test_missing_cache_reads_as_empty(tmp_path):
     store = TokenStore(Env.DEMO, directory=tmp_path / 'nope', clock=lambda: 0.0)
     assert store.read() == (None, 0.0)
     assert not store.fresh_enough()
+
+
+# ── the MEDIUM finding: the token is never briefly world-readable ──────────
+
+def test_token_directory_is_private(tmp_path):
+    store = TokenStore(Env.DEMO, directory=tmp_path / 'state', clock=lambda: 0.0)
+    store.write({'accessToken': 'x'})
+    assert stat.S_IMODE((tmp_path / 'state').stat().st_mode) == 0o700
+
+
+def test_no_leftover_temp_file_holds_the_token(tmp_path):
+    store = TokenStore(Env.DEMO, directory=tmp_path, clock=lambda: 0.0)
+    store.write({'accessToken': 'x'})
+    assert [p.name for p in tmp_path.iterdir()] == [store.path.name]
+
+
+def test_every_file_written_is_private(tmp_path):
+    """Whatever the process umask is, nothing here is group or world readable."""
+    old = os.umask(0o000)
+    try:
+        store = TokenStore(Env.LIVE, directory=tmp_path / 'umask', clock=lambda: 0.0)
+        store.write({'accessToken': 'x'})
+        for path in [store.path, store.directory]:
+            assert not stat.S_IMODE(path.stat().st_mode) & 0o077, path
+    finally:
+        os.umask(old)
+
+
+def test_rewriting_a_token_keeps_it_private(tmp_path):
+    store = TokenStore(Env.DEMO, directory=tmp_path, clock=lambda: 0.0)
+    store.write({'accessToken': 'first'})
+    store.write({'accessToken': 'second'})
+    assert store.read()[0] == 'second'
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o600

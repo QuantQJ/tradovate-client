@@ -17,5 +17,11 @@ First cut.
 - Modify, cancel, cancel all working orders, liquidate, flatten everything.
 - Typed exceptions. Nothing returns an error dictionary.
 - No dependencies for the REST client.
+- Retries cannot duplicate an order. A timed-out or reset write is never
+  repeated, because the request may already have been accepted; the caller
+  gets `TransportError(ambiguous=True)` instead. Reads, and any 429, are
+  retried.
+- The cached token is created with mode 0600 from its first byte, inside a
+  directory created 0700 -- not chmod'ed after the fact.
 
 Not yet included: the websocket client, market data.

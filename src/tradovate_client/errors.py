@@ -37,7 +37,17 @@ class ConfigError(TradovateError):
 
 
 class TransportError(TradovateError):
-    """The request never completed -- DNS, TLS, timeout, connection reset."""
+    """The request did not complete -- DNS, TLS, timeout, connection reset.
+
+    ``ambiguous`` is True when the request may already have been accepted by
+    Tradovate, so repeating it could duplicate the effect. For an order that
+    means: go and read the order and position state before sending anything
+    else. It is False when the failure proves nothing was sent.
+    """
+
+    def __init__(self, message, *, ambiguous=False, **kw):
+        super().__init__(message, **kw)
+        self.ambiguous = ambiguous
 
 
 class AuthError(TradovateError):

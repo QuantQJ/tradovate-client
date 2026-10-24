@@ -176,8 +176,32 @@ except RequestError as exc:
 ```
 
 Every exception carries the endpoint, the status and the response body.
-`ThrottledError` is retried automatically a couple of times, honouring
-`Retry-After`, before it reaches you.
+
+### Retries never duplicate an order
+
+A timeout is not a rejection. If `POST /order/placeorder` times out, the order
+may already be working at Tradovate, so repeating it would place a second one.
+This client therefore retries only when a retry is safe:
+
+- `GET` carries no side effect and is always retried.
+- A write is retried only when the failure proves nothing was sent — DNS
+  failure, or the connection refused.
+- HTTP 429 is retried for any method, because a rate-limited request was
+  declined rather than processed. `Retry-After` is honoured.
+
+When a write fails ambiguously you get a `TransportError` with
+`ambiguous=True`, which means the order state is unknown:
+
+```python
+except TransportError as exc:
+    if exc.ambiguous:
+        # The order may be working. Read before you write.
+        for order in client.working_orders():
+            ...
+```
+
+Pass `client_order_id=` on an order if you want a deliberate resend to be safe
+at Tradovate's end.
 
 ## Order types and their prices
 
