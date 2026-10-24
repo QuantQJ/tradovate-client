@@ -34,9 +34,10 @@ path that reaches the live host, and the two keep separate token files.
 **Failures raise.** No call returns a dictionary with an `error` key in it that
 a caller might mistake for a result. That mistake places orders.
 
-**There is no default credential path.** The client opens no file you did not
-name, so it cannot quietly pick up a key file that happens to be sitting in a
-home directory.
+**There is no default credential path.** The client never guesses where your
+credentials are: no path, no file. It does read and write its own token cache
+in a default directory (`$XDG_STATE_HOME/tradovate-client`, overridable with
+`token_dir=`), which holds a short-lived access token and no credentials.
 
 ## Install
 
@@ -131,7 +132,8 @@ raises instead of taking the first one.
 
 ## Orders
 
-Every type Tradovate publishes:
+The eight types Tradovate's own `OrderType` lists — `Market`, `Limit`,
+`Stop`, `StopLimit`, `TrailingStop`, `TrailingStopLimit`, `MIT` and `QTS`:
 
 ```python
 client.market(Action.BUY, "MNQZ6", 2)
@@ -196,8 +198,6 @@ client.place_oco(
     other=stop,
 )
 ```
-
-### Changing and cancelling
 
 ## What a trade cost, and what it made
 
@@ -325,11 +325,14 @@ A timeout is not a rejection. If `POST /order/placeorder` times out, the order
 may already be working at Tradovate, so repeating it would place a second one.
 This client therefore retries only when a retry is safe:
 
-- `GET` carries no side effect and is always retried.
+- `GET` carries no side effect, so a network-level failure is retried — up to
+  `retries` (2 by default), not indefinitely. A 4xx is not retried: the server
+  answered.
 - A write is retried only when the failure proves nothing was sent — DNS
   failure, or the connection refused.
-- HTTP 429 is retried for any method, because a rate-limited request was
-  declined rather than processed. `Retry-After` is honoured.
+- HTTP 429 is retried for any method, within the same limit, because a
+  rate-limited request was declined rather than processed. `Retry-After` is
+  honoured.
 
 When a write fails ambiguously you get a `TransportError` with
 `ambiguous=True`, which means the order state is unknown:
@@ -355,11 +358,16 @@ at Tradovate's end.
 | `StopLimit` | `price` and `stop_price` |
 | `TrailingStop` | `stop_price` |
 | `TrailingStopLimit` | `price` and `stop_price` |
-| `MIT` | `price` |
-| `QTS` | — |
+| `MIT` | not checked here |
+| `QTS` | not checked here |
 
-The client checks these before sending and raises `ConfigError` on a mismatch.
-Pass `strict=False` to skip the check and let the API decide.
+The client checks the first six before sending and raises `ConfigError` on a
+mismatch. Pass `strict=False` to skip that.
+
+`MIT` and `QTS` are **not** validated: Tradovate marks every price field
+optional at the schema level and does not document which one either of those
+uses, so this library passes them through and lets Tradovate be the authority
+rather than inventing a rule. A refusal comes back as `OrderRejected`.
 
 ## Provenance
 
@@ -373,7 +381,10 @@ Tradovate's own published material, not inferred:
   (`PlaceOSO.md`, `PlaceOCO.md`, `ModifyOrder.md`, `CancelOrder.md`,
   `LiquidatePosition.md`, `RestrainedOrderVersion.md`)
 
-If Tradovate changes a value, `tests/test_enums.py` is where it shows up.
+`tests/test_enums.py` asserts those exact sets, so **a local edit** that
+drifts from Tradovate's published values fails the build. It does not fetch
+the upstream schema, so it cannot detect a change Tradovate makes
+unannounced — for that, re-read the sources above.
 
 ## Tests
 
@@ -387,8 +398,8 @@ broker account.
 
 ## Not here yet
 
-- The websocket client — persistent socket, heartbeat, real-time fill events.
 - Market data.
+- An async client. This one is synchronous.
 
 ## Disclaimer
 
