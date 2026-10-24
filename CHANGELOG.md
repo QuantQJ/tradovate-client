@@ -9,6 +9,10 @@ First cut.
   cached per environment, mode 0600.
 - `Env` is a required argument with no default. Demo and live are separate
   hosts with separate token files.
+- No default credential path. The client opens no file the caller did not
+  name: `credentials=`, then `credential_path=`, then the file named by
+  `$TRADOVATE_CREDENTIALS`, then the seven `TRADOVATE_*` variables, then
+  `ConfigError` listing those options.
 - Reads: accounts, cash balance, positions, contracts, fills, fills for one
   order, orders, working orders, and a one-call `snapshot()`.
 - Every order type Tradovate publishes: Market, Limit, Stop, StopLimit,

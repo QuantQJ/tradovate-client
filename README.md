@@ -5,7 +5,7 @@ A Tradovate API client for Python.
 ```python
 from tradovate_client import TradovateClient, Env, Action
 
-client = TradovateClient(Env.DEMO)        # reads ~/.tradovate_key
+client = TradovateClient(Env.DEMO, credential_path="~/my-tradovate-key.json")
 
 print(client.snapshot())
 client.limit(Action.BUY, "MNQZ6", 1, price=20150.25)
@@ -34,6 +34,10 @@ path that reaches the live host, and the two keep separate token files.
 **Failures raise.** No call returns a dictionary with an `error` key in it that
 a caller might mistake for a result. That mistake places orders.
 
+**There is no default credential path.** The client opens no file you did not
+name, so it cannot quietly pick up a key file that happens to be sitting in a
+home directory.
+
 ## Install
 
 ```sh
@@ -43,11 +47,36 @@ pip install "tradovate-client[socket]"    # adds websocket-client
 
 ## Credentials
 
-Put the seven fields Tradovate's auth endpoint wants in a file and lock it
-down:
+There is no default path. You tell the client where your credentials are, or
+you hand them over directly. Four ways, tried in this order:
+
+```python
+# 1. pass them in
+from tradovate_client import Credentials
+client = TradovateClient(Env.DEMO, credentials=Credentials(
+    name="...", password="...", appId="...", appVersion="1.0",
+    deviceId="...", cid=0, sec="..."))
+
+# 2. name a file
+client = TradovateClient(Env.DEMO, credential_path="/secure/place/key.json")
+```
 
 ```sh
-cat > ~/.tradovate_key <<'EOF'
+# 3. name that file in the environment
+export TRADOVATE_CREDENTIALS=/secure/place/key.json
+
+# 4. or supply the fields themselves
+export TRADOVATE_NAME=... TRADOVATE_PASSWORD=... TRADOVATE_APP_ID=... \
+       TRADOVATE_APP_VERSION=1.0 TRADOVATE_DEVICE_ID=... \
+       TRADOVATE_CID=... TRADOVATE_SEC=...
+```
+
+With none of those the client raises `ConfigError` and lists the options. It
+never falls back to a path of its own choosing.
+
+The file holds the seven fields Tradovate's auth endpoint wants:
+
+```json
 {
   "name": "your-username",
   "password": "your-password",
@@ -57,15 +86,10 @@ cat > ~/.tradovate_key <<'EOF'
   "cid": 0,
   "sec": "your-api-secret"
 }
-EOF
-chmod 600 ~/.tradovate_key
 ```
 
-The client refuses to read a credential file that other users can read. You can
-also pass `Credentials(...)` directly, or use `Credentials.from_env()` with
-`TRADOVATE_NAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_APP_ID`,
-`TRADOVATE_APP_VERSION`, `TRADOVATE_DEVICE_ID`, `TRADOVATE_CID`,
-`TRADOVATE_SEC`.
+Give it mode 600 — the client refuses to read a credential file that other
+users can read.
 
 `cid` and `sec` come from Tradovate's API access page. `deviceId` should stay
 the same for a given machine.

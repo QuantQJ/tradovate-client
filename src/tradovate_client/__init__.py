@@ -6,13 +6,16 @@ liquidate. The REST layer uses nothing but the standard library.
 
     from tradovate_client import TradovateClient, Env, Action
 
-    client = TradovateClient(Env.DEMO)
+    client = TradovateClient(Env.DEMO, credential_path='~/my-key.json')
     print(client.snapshot())
     client.limit(Action.BUY, 'MNQZ6', 1, price=20150.25)
 
 Demo and live are different hosts with different credentials. ``env`` is a
 required argument with no default, so a client built for demo has no code path
 to the live account.
+
+There is no default credential path either. The client opens no file the
+caller did not name.
 """
 
 from .auth import Credentials, TokenStore

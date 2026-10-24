@@ -1,5 +1,6 @@
 """The REST client."""
 
+import os
 import time
 
 from . import orders as _orders
@@ -21,12 +22,14 @@ class TradovateClient:
     rather than a flag on each call -- there is no code path that reaches the
     live host from a client built for demo.
 
-        >>> from tradovate_client import TradovateClient, Env
-        >>> client = TradovateClient(Env.DEMO)          # reads ~/.tradovate_key
+        >>> from tradovate_client import Credentials, TradovateClient, Env
+        >>> client = TradovateClient(                   # doctest: +SKIP
+        ...     Env.DEMO, credential_path='/path/to/key.json')
         >>> client.snapshot().cash.total_cash           # doctest: +SKIP
-    """
 
-    DEFAULT_CREDENTIAL_PATH = '~/.tradovate_key'
+    There is no default credential path. The client reads no file the caller
+    did not name, so it cannot pick up someone else's key file by accident.
+    """
 
     def __init__(self, env, *, credentials=None, credential_path=None,
                  token_store=None, token_dir=None, account=None,
@@ -44,12 +47,38 @@ class TradovateClient:
 
     # ── credentials and tokens ──────────────────────────────────────────────
 
+    #: Environment variable that may name a credential file.
+    CREDENTIAL_PATH_VAR = 'TRADOVATE_CREDENTIALS'
+
     @property
     def credentials(self):
         if self._credentials is None:
-            self._credentials = Credentials.from_file(
-                self._credential_path or self.DEFAULT_CREDENTIAL_PATH)
+            self._credentials = self._resolve_credentials()
         return self._credentials
+
+    def _resolve_credentials(self):
+        """Find credentials without ever guessing at a path on disk.
+
+        In order: the ``credentials=`` object, the file named by
+        ``credential_path=``, the file named by ``$TRADOVATE_CREDENTIALS``,
+        then the seven ``TRADOVATE_*`` variables. There is deliberately no
+        default path -- this library will not open a credential file that the
+        caller did not ask for.
+        """
+        if self._credential_path:
+            return Credentials.from_file(self._credential_path)
+        named = os.environ.get(self.CREDENTIAL_PATH_VAR)
+        if named:
+            return Credentials.from_file(named)
+        if os.environ.get('TRADOVATE_NAME'):
+            return Credentials.from_env()
+        raise ConfigError(
+            'no credentials were given. Use one of:\n'
+            '  TradovateClient(env, credentials=Credentials(...))\n'
+            '  TradovateClient(env, credential_path="/your/key.json")\n'
+            '  %s=/your/key.json in the environment\n'
+            '  the seven TRADOVATE_* variables (see Credentials.from_env)'
+            % self.CREDENTIAL_PATH_VAR)
 
     def token(self, *, force=False):
         """A usable access token, renewed rather than re-requested when possible."""
