@@ -40,6 +40,18 @@ RENEW_MARGIN_SECONDS = 300.0
 #: Used when Tradovate's reply has no parseable expiry.
 ASSUMED_LIFETIME_SECONDS = 3000.0
 
+#: How many time penalties to sit through before giving up and raising.
+#: Each wait is dictated by Tradovate's own ``p-time``.
+MAX_PENALTY_RETRIES = 4
+
+#: A cap on any single wait, so a bad ``p-time`` cannot hang a process
+#: indefinitely. Tradovate's penalties are seconds to a few minutes.
+MAX_PENALTY_WAIT_SECONDS = 600.0
+
+#: User statuses that mean authentication will not succeed by retrying.
+#: From Tradovate's own AccessTokenResponse model.
+BLOCKING_USER_STATUSES = frozenset({'Closed', 'TemporaryLocked'})
+
 
 @dataclass(frozen=True)
 class Credentials:

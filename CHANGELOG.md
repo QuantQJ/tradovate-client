@@ -21,6 +21,15 @@ First cut.
 - Modify, cancel, cancel all working orders, liquidate, flatten everything.
 - Typed exceptions. Nothing returns an error dictionary.
 - No dependencies for the REST client.
+- Tradovate's authentication time penalty is handled. It arrives as HTTP 200
+  with no token and `p-ticket` / `p-time` / `p-captcha` instead, so a client
+  that reads the status alone sees a success with a missing token and
+  typically retries -- which extends the penalty. This waits the `p-time`
+  given, sends the ticket back with the retry, caps a single wait, gives up
+  with `TimePenalty` after a bounded number of them, and raises
+  `CaptchaRequired` without retrying when a captcha is asked for. Reference:
+  `tradovate/example-api-js`, `tutorial/Access/EX-3-Time-Penalty`.
+  `errorText` and a blocking `userStatus` are surfaced as well.
 - `TradovateSocket`: the persistent websocket. Orders go over a connection
   that is already open, fill prices arrive as events with the price Tradovate
   reported, and one `user/syncrequest` replaces polling. It implements the

@@ -23,11 +23,13 @@ from .client import TradovateClient
 from .enums import Action, Env, OrderType, TimeInForce
 from .errors import (
     AuthError,
+    CaptchaRequired,
     ConfigError,
     NotFoundError,
     RequestError,
     ServerError,
     ThrottledError,
+    TimePenalty,
     TradovateError,
     TransportError,
 )
@@ -62,6 +64,8 @@ __all__ = [
     'ConfigError',
     'TransportError',
     'AuthError',
+    'CaptchaRequired',
+    'TimePenalty',
     'ThrottledError',
     'RequestError',
     'ServerError',

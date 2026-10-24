@@ -8,9 +8,24 @@ from typing import Any
 
 from . import orders as _orders
 from ._http import Transport
-from .auth import RENEW_MARGIN_SECONDS, Credentials, TokenStore
+from .auth import (
+    BLOCKING_USER_STATUSES,
+    MAX_PENALTY_RETRIES,
+    MAX_PENALTY_WAIT_SECONDS,
+    RENEW_MARGIN_SECONDS,
+    Credentials,
+    TokenStore,
+)
 from .enums import Action, Env, OrderType, TimeInForce
-from .errors import AuthError, ConfigError, NotFoundError, raise_for_result
+from .errors import (
+    AuthError,
+    CaptchaRequired,
+    ConfigError,
+    NotFoundError,
+    TimePenalty,
+    penalty_of,
+    raise_for_result,
+)
 from .models import (
     Account,
     CashBalance,
@@ -63,6 +78,7 @@ class TradovateClient:
         self._clock = clock
         self._credentials = credentials
         self._credential_path = credential_path
+        self._sleep = sleep
         self._transport = Transport(
             self.env.rest_url, timeout=timeout, retries=retries, sleep=sleep
         )
@@ -137,12 +153,80 @@ class TradovateClient:
                     return self._tokens.write(reply or {})
                 except (AuthError, ConfigError):
                     self._tokens.clear()
-        reply = self._transport.request(
-            'POST', '/auth/accesstokenrequest', body=self.credentials.as_payload()
+        return self._authenticate()
+
+    def _authenticate(self) -> str:
+        """Full authentication, sitting out Tradovate's time penalties.
+
+        A throttled attempt comes back as HTTP 200 with ``p-ticket`` and no
+        token. Their own reference implementation waits ``p-time`` seconds and
+        retries the same request with the ticket attached, and stops outright
+        when ``p-captcha`` is set, because a third-party application cannot
+        solve one. Retrying through a penalty extends it, which is how an
+        unattended client gets locked out.
+        """
+        body = self.credentials.as_payload()
+        waited = 0.0
+        for attempt in range(1, MAX_PENALTY_RETRIES + 2):
+            reply = self._transport.request(
+                'POST', '/auth/accesstokenrequest', body=body
+            )
+            penalty = penalty_of(reply)
+            if penalty is None:
+                return self._finish_auth(reply)
+            ticket, seconds, captcha = penalty
+            if captcha:
+                raise CaptchaRequired(
+                    'Tradovate is asking for a captcha, which a third-party '
+                    'application cannot answer. Sign in through Tradovate '
+                    'directly, then let this client authenticate again. Do '
+                    'not retry: retrying extends the penalty.',
+                    endpoint='/auth/accesstokenrequest',
+                    body=reply,
+                )
+            if attempt > MAX_PENALTY_RETRIES:
+                raise TimePenalty(
+                    'Tradovate is still throttling authentication after %d '
+                    'attempts and %gs of waiting; it last asked for %gs. Wait '
+                    'rather than retrying -- each attempt extends the penalty.'
+                    % (attempt - 1, waited, seconds),
+                    seconds=seconds,
+                    ticket=ticket,
+                    attempts=attempt - 1,
+                    endpoint='/auth/accesstokenrequest',
+                    body=reply,
+                )
+            wait = min(max(0.0, seconds), MAX_PENALTY_WAIT_SECONDS)
+            waited += wait
+            self._sleep(wait)
+            # The retry is the same request with the ticket added, exactly as
+            # Tradovate's own example does it.
+            body = dict(self.credentials.as_payload())
+            body['p-ticket'] = ticket
+        raise AuthError(  # pragma: no cover - loop always returns
+            'authentication did not resolve', endpoint='/auth/accesstokenrequest'
         )
-        if not (reply or {}).get('accessToken'):
+
+    def _finish_auth(self, reply) -> str:
+        """Check the documented failure fields, then store the token."""
+        reply = reply or {}
+        if reply.get('errorText'):
             raise AuthError(
-                '%s authentication failed' % self.env.value,
+                'Tradovate refused the login: %s' % reply['errorText'],
+                endpoint='/auth/accesstokenrequest',
+                body=reply,
+            )
+        status = reply.get('userStatus')
+        if status in BLOCKING_USER_STATUSES:
+            raise AuthError(
+                'this Tradovate login is %s, so authentication will not '
+                'succeed by retrying' % status,
+                endpoint='/auth/accesstokenrequest',
+                body=reply,
+            )
+        if not reply.get('accessToken'):
+            raise AuthError(
+                '%s authentication returned no token' % self.env.value,
                 endpoint='/auth/accesstokenrequest',
                 body=reply,
             )

@@ -19,6 +19,29 @@ There are a few Tradovate wrappers on PyPI and GitHub. Three things here are
 not in any of them, and all three are the difference between a script that
 works once and one that runs unattended.
 
+**Authentication sits out Tradovate's time penalty.** Tradovate throttles
+`/auth/accesstokenrequest` by answering **HTTP 200** with no token and
+`p-ticket`, `p-time` and sometimes `p-captcha` instead. A client that reads
+that as a failure and retries makes the penalty worse, which is how an
+unattended session gets locked out. This one waits the `p-time` it was given,
+sends the ticket back with the retry, and stops outright on a `p-captcha` —
+because a third-party application cannot answer one, and retrying past it only
+extends the lockout:
+
+```python
+from tradovate_client import TimePenalty, CaptchaRequired
+
+try:
+    client.token()
+except CaptchaRequired:
+    ...  # sign in through Tradovate itself; do not retry
+except TimePenalty as exc:
+    ...  # still throttled after the retry budget; exc.seconds says how long
+```
+
+`errorText` and a `userStatus` of `Closed` or `TemporaryLocked` are surfaced
+too, so a login that will never succeed says so rather than being retried.
+
 **Tokens are renewed, not re-requested.** Tradovate rate-limits
 `/auth/accesstokenrequest` hard — the demo environment especially — so a client
 that authenticates from scratch on every run eventually gets locked out. This

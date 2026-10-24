@@ -11,8 +11,18 @@ common way an automated trading script places an order it did not mean to.
 #: The full set is in Tradovate's own PlaceOrderResult model.
 SUCCESS_REASON = 'Success'
 
+#: Field names Tradovate uses to signal an authentication time penalty.
+#: A response carrying ``p-ticket`` is a throttle, not a success, even though
+#: it arrives as HTTP 200.
+PENALTY_TICKET = 'p-ticket'
+PENALTY_TIME = 'p-time'
+PENALTY_CAPTCHA = 'p-captcha'
+
 __all__ = [
     'SUCCESS_REASON',
+    'PENALTY_TICKET',
+    'PENALTY_TIME',
+    'PENALTY_CAPTCHA',
     'TradovateError',
     'ConfigError',
     'TransportError',
@@ -23,6 +33,9 @@ __all__ = [
     'ServerError',
     'OrderRejected',
     'raise_for_result',
+    'TimePenalty',
+    'CaptchaRequired',
+    'penalty_of',
 ]
 
 
@@ -82,6 +95,53 @@ def raise_for_result(payload, endpoint=None):
         endpoint=endpoint,
         body=payload,
     )
+
+
+class TimePenalty(TradovateError):
+    """Tradovate is throttling authentication and said how long to wait.
+
+    Arrives as HTTP 200 with no access token. ``seconds`` is its own
+    ``p-time`` and ``ticket`` its ``p-ticket``, which must be sent back with
+    the retry. The client waits and retries on its own; this surfaces only
+    when the retry budget is exhausted, and then the right response is to wait
+    rather than to try again.
+    """
+
+    def __init__(self, message, *, seconds=None, ticket=None, attempts=None, **kw):
+        super().__init__(message, **kw)
+        self.seconds = seconds
+        self.ticket = ticket
+        self.attempts = attempts
+
+
+class CaptchaRequired(TradovateError):
+    """Authentication needs a human.
+
+    Tradovate sends ``p-captcha`` when it wants a captcha solved, and their
+    own guidance is that a third-party application cannot proceed. This is
+    never retried: retrying extends the penalty. Sign in through Tradovate's
+    own interface, then let the client authenticate again.
+    """
+
+
+def penalty_of(reply):
+    """Return ``(ticket, seconds, captcha)`` if this reply is a penalty.
+
+    Returns ``None`` when it is not. A reply is a penalty when it carries
+    ``p-ticket`` -- the HTTP status is 200 either way, which is exactly why
+    this has to be checked rather than inferred from the status.
+    """
+    if not isinstance(reply, dict):
+        return None
+    ticket = reply.get(PENALTY_TICKET)
+    if not ticket:
+        return None
+    raw = reply.get(PENALTY_TIME)
+    try:
+        seconds = float(raw) if raw is not None else 0.0
+    except (TypeError, ValueError):
+        seconds = 0.0
+    return ticket, seconds, reply.get(PENALTY_CAPTCHA)
 
 
 class ConfigError(TradovateError):
