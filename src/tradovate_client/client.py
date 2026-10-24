@@ -746,11 +746,17 @@ class TradovateClient:
     def cancel_working(self, *, account=None) -> list[int]:
         """Cancel working orders. Returns the ids it cancelled.
 
-        With ``account`` given, only that account's orders are touched. On a
+        Scoped to ``account`` when given, otherwise to the account this client
+        was constructed with. Only a client with no account at all cancels
+        across the whole login, and then there is nothing to scope to. On a
         login with several accounts this matters: cancelling everything would
-        reach into an account the caller did not name.
+        reach into an account the caller never named.
         """
-        account_id = self.account(account).id if account is not None else None
+        # The constructor's account= is a hint that applies to every call, so
+        # resolve it here too. Filtering only on an explicitly passed account
+        # meant a client built for one account cancelled all of them.
+        scoped = account if account is not None else self._account_hint
+        account_id = self.account(scoped).id if scoped is not None else None
         cancelled = []
         for order in self.working_orders():
             if account_id is not None and order.account_id != account_id:

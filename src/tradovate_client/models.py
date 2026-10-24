@@ -298,6 +298,12 @@ class Order:
     action: str = ''
     order_type: str = ''
     status: str = ''
+    qty: float = 0.0
+    price: "float | None" = None
+    stop_price: "float | None" = None
+    time_in_force: str = ''
+    client_order_id: "str | None" = None
+    text: str = ''
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -309,8 +315,23 @@ class Order:
             action=d.get('action') or '',
             order_type=d.get('orderType') or '',
             status=d.get('ordStatus') or '',
+            qty=_f(d.get('orderQty')),
+            price=_opt(d.get('price')),
+            stop_price=_opt(d.get('stopPrice')),
+            time_in_force=d.get('timeInForce') or '',
+            client_order_id=d.get('clOrdId') or None,
+            text=d.get('text') or '',
             raw=d,
         )
+
+    @property
+    def side(self) -> str:
+        """An alias for ``action``.
+
+        Tradovate calls it ``action``; most other venues call it side. Both
+        names work here so a caller moving between them is not caught out.
+        """
+        return self.action
 
     @property
     def is_working(self) -> bool:
@@ -328,6 +349,16 @@ class Snapshot:
     @property
     def is_flat(self) -> bool:
         return not any(p.net_pos for p in self.positions.values())
+
+
+def _opt(value) -> "float | None":
+    """A float, or None when the field was absent rather than zero."""
+    if value is None or value == '':
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _f(value, default=0.0) -> float:
