@@ -1,0 +1,234 @@
+# tradovate-client
+
+A Tradovate API client for Python.
+
+```python
+from tradovate_client import TradovateClient, Env, Action
+
+client = TradovateClient(Env.DEMO)        # reads ~/.tradovate_key
+
+print(client.snapshot())
+client.limit(Action.BUY, "MNQZ6", 1, price=20150.25)
+```
+
+No dependencies. The REST client is standard library only.
+
+## Why this one
+
+There are a few Tradovate wrappers on PyPI and GitHub. Three things here are
+not in any of them, and all three are the difference between a script that
+works once and one that runs unattended.
+
+**Tokens are renewed, not re-requested.** Tradovate rate-limits
+`/auth/accesstokenrequest` hard — the demo environment especially — so a client
+that authenticates from scratch on every run eventually gets locked out. This
+one calls `/auth/renewaccesstoken` once a cached token is within five minutes
+of expiring, and only performs a full authentication when it has nothing
+usable. Tokens are cached per environment at mode 0600.
+
+**Demo and live cannot be confused.** They are different hosts with different
+credentials, so the environment is a property of the client, not a flag on each
+call. `env` is required and has no default. A client built for demo has no code
+path that reaches the live host, and the two keep separate token files.
+
+**Failures raise.** No call returns a dictionary with an `error` key in it that
+a caller might mistake for a result. That mistake places orders.
+
+## Install
+
+```sh
+pip install tradovate-client              # REST only, no dependencies
+pip install "tradovate-client[socket]"    # adds websocket-client
+```
+
+## Credentials
+
+Put the seven fields Tradovate's auth endpoint wants in a file and lock it
+down:
+
+```sh
+cat > ~/.tradovate_key <<'EOF'
+{
+  "name": "your-username",
+  "password": "your-password",
+  "appId": "your-app-name",
+  "appVersion": "1.0",
+  "deviceId": "a-stable-uuid-for-this-machine",
+  "cid": 0,
+  "sec": "your-api-secret"
+}
+EOF
+chmod 600 ~/.tradovate_key
+```
+
+The client refuses to read a credential file that other users can read. You can
+also pass `Credentials(...)` directly, or use `Credentials.from_env()` with
+`TRADOVATE_NAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_APP_ID`,
+`TRADOVATE_APP_VERSION`, `TRADOVATE_DEVICE_ID`, `TRADOVATE_CID`,
+`TRADOVATE_SEC`.
+
+`cid` and `sec` come from Tradovate's API access page. `deviceId` should stay
+the same for a given machine.
+
+## Reading the account
+
+```python
+client = TradovateClient(Env.DEMO, account="DEMO1234")
+
+client.accounts()                   # [Account(...), ...]
+client.cash_balance()               # CashBalance(total_cash=..., open_pnl=...)
+client.positions()                  # this account's positions only
+client.orders()                     # every order
+client.working_orders()             # just the live ones
+client.fills_for_order(order_id)    # what it actually traded at
+client.find_contract("MNQZ6")       # Contract(id=..., name="MNQZ6")
+
+snap = client.snapshot()            # one object for a dashboard poller
+snap.cash.open_pnl
+snap.positions["MNQZ6"].net_pos
+snap.is_flat
+```
+
+`snapshot()` resolves contract names only for positions actually held, so it
+does not pull the full contract list on every poll.
+
+If the login has more than one account and you did not say which, the client
+raises instead of taking the first one.
+
+## Orders
+
+Every type Tradovate publishes:
+
+```python
+client.market(Action.BUY, "MNQZ6", 2)
+client.limit(Action.BUY, "MNQZ6", 2, price=20150.25)
+client.stop(Action.SELL, "MNQZ6", 2, stop_price=20100.00)
+client.stop_limit(Action.SELL, "MNQZ6", 2, price=20095.00, stop_price=20100.00)
+client.trailing_stop(Action.SELL, "MNQZ6", 2, stop_price=20100.00)
+client.trailing_stop_limit(Action.SELL, "MNQZ6", 2, price=20095.0, stop_price=20100.0)
+client.market_if_touched(Action.BUY, "MNQZ6", 2, price=20050.00)
+```
+
+Any of them takes `time_in_force`, `expire_time`, `max_show`,
+`peg_difference`, `text`, `activation_time`, `client_order_id`,
+`custom_tag_50`.
+
+```python
+from tradovate_client import TimeInForce
+client.limit(Action.BUY, "MNQZ6", 1, price=20150.0, time_in_force=TimeInForce.GTC)
+```
+
+### Brackets
+
+An entry with a target and a stop attached, in one call:
+
+```python
+client.bracketed_market(
+    Action.BUY, "MNQZ6", 1,
+    take_profit=20200.00,
+    stop_loss=20050.00,
+)
+```
+
+Both prices are yours. This library does not calculate a stop distance or a
+target and never will — that is a trading decision, not a client's job.
+
+For full control, build the legs:
+
+```python
+from tradovate_client import OrderType
+
+target = client.bracket_leg(Action.SELL, OrderType.LIMIT, price=20200.0)
+stop   = client.bracket_leg(Action.SELL, OrderType.STOP, stop_price=20050.0)
+
+client.place_oso(action=Action.BUY, symbol="MNQZ6", qty=1,
+                 order_type=OrderType.MARKET, bracket1=target, bracket2=stop)
+
+client.place_oco(action=Action.SELL, symbol="MNQZ6", qty=1,
+                 order_type=OrderType.LIMIT, price=20200.0, other=stop)
+```
+
+### Changing and cancelling
+
+```python
+client.modify(order_id, price=20160.00)
+client.cancel(order_id)
+client.cancel_working()                    # -> [ids it cancelled]
+client.liquidate(contract_id)
+client.flatten_all()                       # -> {"cancelled": [...], "liquidated": [...]}
+```
+
+`flatten_all()` on a live client closes real positions.
+
+## Errors
+
+```python
+from tradovate_client import (TradovateError, AuthError, ThrottledError,
+                              RequestError, ServerError, TransportError,
+                              ConfigError, NotFoundError)
+
+try:
+    client.market(Action.BUY, "MNQZ6", 1)
+except ThrottledError as exc:
+    wait = exc.retry_after          # the server's own advice, when it gives one
+except RequestError as exc:
+    print(exc.status, exc.endpoint, exc.body)
+```
+
+Every exception carries the endpoint, the status and the response body.
+`ThrottledError` is retried automatically a couple of times, honouring
+`Retry-After`, before it reaches you.
+
+## Order types and their prices
+
+| type | needs |
+| --- | --- |
+| `Market` | nothing |
+| `Limit` | `price` |
+| `Stop` | `stop_price` |
+| `StopLimit` | `price` and `stop_price` |
+| `TrailingStop` | `stop_price` |
+| `TrailingStopLimit` | `price` and `stop_price` |
+| `MIT` | `price` |
+| `QTS` | — |
+
+The client checks these before sending and raises `ConfigError` on a mismatch.
+Pass `strict=False` to skip the check and let the API decide.
+
+## Provenance
+
+The enumerations and payload field names in this library are copied from
+Tradovate's own published material, not inferred:
+
+- `OrderType` — `tradovate/example-api-trading-strategy`,
+  `utils/orderType.js`
+- `Action`, `TimeInForce`, and every order field name —
+  `tradovate/example-api-csharp-trading`, `services-api/docs/`
+  (`PlaceOSO.md`, `PlaceOCO.md`, `ModifyOrder.md`, `CancelOrder.md`,
+  `LiquidatePosition.md`, `RestrainedOrderVersion.md`)
+
+If Tradovate changes a value, `tests/test_enums.py` is where it shows up.
+
+## Tests
+
+```sh
+pip install -e ".[dev]"
+pytest
+```
+
+They use a fake transport and a fake clock. No network, no credentials, no
+broker account.
+
+## Not here yet
+
+- The websocket client — persistent socket, heartbeat, real-time fill events.
+- Market data.
+
+## Disclaimer
+
+Not affiliated with, endorsed by, or supported by Tradovate. Trading futures
+involves risk of loss. This is software, not advice.
+
+## Licence
+
+MIT.

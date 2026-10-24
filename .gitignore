@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+.coverage
+htmlcov/
+.DS_Store
+*.tmp
+# never commit credentials or cached tokens
+.tradovate_key
+token-*.json
+*.key
+.env
