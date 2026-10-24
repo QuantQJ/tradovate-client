@@ -21,6 +21,16 @@ First cut.
 - Modify, cancel, cancel all working orders, liquidate, flatten everything.
 - Typed exceptions. Nothing returns an error dictionary.
 - No dependencies for the REST client.
+- `TradovateSocket`: the persistent websocket. Orders go over a connection
+  that is already open, fill prices arrive as events with the price Tradovate
+  reported, and one `user/syncrequest` replaces polling. It implements the
+  frame protocol properly -- `o`/`h`/`a`/`c`, the authorize handshake, and the
+  keep-alive every 2 seconds that the server's 2.5-second idle timeout
+  requires. Full auth stays on REST so token renewal is inherited. Order
+  bodies come from the same builder as the REST path, with unset fields
+  stripped the same way, so the two are byte-for-byte identical. A request
+  whose socket dies mid-flight raises with `ambiguous=True` rather than
+  hanging or being retried.
 - Fill fees, fill pairs and products, so cost and P&L come from the broker's
   books rather than arithmetic here:
   - `FillFee` reads all seven charges Tradovate reports per fill -- clearing,

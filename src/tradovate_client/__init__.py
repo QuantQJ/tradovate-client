@@ -45,11 +45,13 @@ from .models import (
     Snapshot,
 )
 from .orders import build_bracket_leg, build_order
+from .stream import TradovateSocket
 
 __version__ = '0.1.0'
 
 __all__ = [
     'TradovateClient',
+    'TradovateSocket',
     'Credentials',
     'TokenStore',
     'Env',

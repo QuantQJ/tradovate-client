@@ -246,6 +246,55 @@ client.flatten_all()  # -> {"cancelled": [...], "liquidated": [...]}
 
 `flatten_all()` on a live client closes real positions.
 
+## The persistent socket
+
+REST opens a new connection per call and polls for position. The socket holds
+one open instead:
+
+```python
+from tradovate_client import TradovateClient, TradovateSocket, Env
+
+rest = TradovateClient(Env.DEMO, credential_path="/secure/key.json")
+
+with TradovateSocket(Env.DEMO, client=rest) as stream:
+    print(stream.positions())  # from the snapshot, no request
+    stream.on("fill", lambda f: print("filled at", f["price"]))
+    stream.market("Buy", "MNQZ6", 1)  # no handshake
+```
+
+Three things it buys:
+
+- **Orders skip the TLS handshake** — they go over a connection already up.
+- **Fill prices are the real ones**, arriving as events rather than inferred.
+- **No polling.** One `user/syncrequest` gives a full snapshot and the server
+  streams changes after that, so there is nothing to rate-limit.
+
+Full authentication stays on REST, so the socket inherits the renewal
+behaviour rather than reimplementing it. Order bodies are built by the same
+function the REST client uses and unset fields are stripped the same way, so
+a socket order and a REST order are byte-for-byte identical.
+
+```python
+stream.limit("Buy", "MNQZ6", 1, 20150.25)
+stream.stop("Sell", "MNQZ6", 1, 20100.00)
+stream.stop_limit("Sell", "MNQZ6", 1, 20095.00, 20100.00)
+stream.cancel(order_id)
+stream.liquidate(contract_id)
+
+stream.last_fill()  # Fill, with the price Tradovate reported
+stream.position(11)  # from the streamed state
+stream.request("contract/find", "name=MNQZ6")  # anything else
+```
+
+Events you can subscribe to: `fill`, `position`, `order`, `cash`, `props`. A
+handler that raises does not take the receive loop down with it.
+
+The detail that matters: Tradovate drops a connection idle for 2.5 seconds, so
+the client sends a keep-alive every 2. That is the part other Tradovate
+libraries miss.
+
+Needs `websocket-client`: `pip install "tradovate-client[socket]"`.
+
 ## Errors
 
 ```python
