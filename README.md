@@ -53,9 +53,19 @@ you hand them over directly. Four ways, tried in this order:
 ```python
 # 1. pass them in
 from tradovate_client import Credentials
-client = TradovateClient(Env.DEMO, credentials=Credentials(
-    name="...", password="...", appId="...", appVersion="1.0",
-    deviceId="...", cid=0, sec="..."))
+
+client = TradovateClient(
+    Env.DEMO,
+    credentials=Credentials(
+        name="...",
+        password="...",
+        appId="...",
+        appVersion="1.0",
+        deviceId="...",
+        cid=0,
+        sec="...",
+    ),
+)
 
 # 2. name a file
 client = TradovateClient(Env.DEMO, credential_path="/secure/place/key.json")
@@ -99,15 +109,15 @@ the same for a given machine.
 ```python
 client = TradovateClient(Env.DEMO, account="DEMO1234")
 
-client.accounts()                   # [Account(...), ...]
-client.cash_balance()               # CashBalance(total_cash=..., open_pnl=...)
-client.positions()                  # this account's positions only
-client.orders()                     # every order
-client.working_orders()             # just the live ones
-client.fills_for_order(order_id)    # what it actually traded at
-client.find_contract("MNQZ6")       # Contract(id=..., name="MNQZ6")
+client.accounts()  # [Account(...), ...]
+client.cash_balance()  # CashBalance(total_cash=..., open_pnl=...)
+client.positions()  # this account's positions only
+client.orders()  # every order
+client.working_orders()  # just the live ones
+client.fills_for_order(order_id)  # what it actually traded at
+client.find_contract("MNQZ6")  # Contract(id=..., name="MNQZ6")
 
-snap = client.snapshot()            # one object for a dashboard poller
+snap = client.snapshot()  # one object for a dashboard poller
 snap.cash.open_pnl
 snap.positions["MNQZ6"].net_pos
 snap.is_flat
@@ -139,6 +149,7 @@ Any of them takes `time_in_force`, `expire_time`, `max_show`,
 
 ```python
 from tradovate_client import TimeInForce
+
 client.limit(Action.BUY, "MNQZ6", 1, price=20150.0, time_in_force=TimeInForce.GTC)
 ```
 
@@ -148,7 +159,9 @@ An entry with a target and a stop attached, in one call:
 
 ```python
 client.bracketed_market(
-    Action.BUY, "MNQZ6", 1,
+    Action.BUY,
+    "MNQZ6",
+    1,
     take_profit=20200.00,
     stop_loss=20050.00,
 )
@@ -163,13 +176,25 @@ For full control, build the legs:
 from tradovate_client import OrderType
 
 target = client.bracket_leg(Action.SELL, OrderType.LIMIT, price=20200.0)
-stop   = client.bracket_leg(Action.SELL, OrderType.STOP, stop_price=20050.0)
+stop = client.bracket_leg(Action.SELL, OrderType.STOP, stop_price=20050.0)
 
-client.place_oso(action=Action.BUY, symbol="MNQZ6", qty=1,
-                 order_type=OrderType.MARKET, bracket1=target, bracket2=stop)
+client.place_oso(
+    action=Action.BUY,
+    symbol="MNQZ6",
+    qty=1,
+    order_type=OrderType.MARKET,
+    bracket1=target,
+    bracket2=stop,
+)
 
-client.place_oco(action=Action.SELL, symbol="MNQZ6", qty=1,
-                 order_type=OrderType.LIMIT, price=20200.0, other=stop)
+client.place_oco(
+    action=Action.SELL,
+    symbol="MNQZ6",
+    qty=1,
+    order_type=OrderType.LIMIT,
+    price=20200.0,
+    other=stop,
+)
 ```
 
 ### Changing and cancelling
@@ -177,9 +202,9 @@ client.place_oco(action=Action.SELL, symbol="MNQZ6", qty=1,
 ```python
 client.modify(order_id, price=20160.00)
 client.cancel(order_id)
-client.cancel_working()                    # -> [ids it cancelled]
+client.cancel_working()  # -> [ids it cancelled]
 client.liquidate(contract_id)
-client.flatten_all()                       # -> {"cancelled": [...], "liquidated": [...]}
+client.flatten_all()  # -> {"cancelled": [...], "liquidated": [...]}
 ```
 
 `flatten_all()` on a live client closes real positions.
@@ -187,14 +212,21 @@ client.flatten_all()                       # -> {"cancelled": [...], "liquidated
 ## Errors
 
 ```python
-from tradovate_client import (TradovateError, AuthError, ThrottledError,
-                              RequestError, ServerError, TransportError,
-                              ConfigError, NotFoundError)
+from tradovate_client import (
+    TradovateError,
+    AuthError,
+    ThrottledError,
+    RequestError,
+    ServerError,
+    TransportError,
+    ConfigError,
+    NotFoundError,
+)
 
 try:
     client.market(Action.BUY, "MNQZ6", 1)
 except ThrottledError as exc:
-    wait = exc.retry_after          # the server's own advice, when it gives one
+    wait = exc.retry_after  # the server's own advice, when it gives one
 except RequestError as exc:
     print(exc.status, exc.endpoint, exc.body)
 ```

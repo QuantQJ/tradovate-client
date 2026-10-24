@@ -7,8 +7,15 @@ from tradovate_client import Action, Env, OrderType, TimeInForce
 
 def test_order_types_match_tradovates_published_set():
     assert {t.value for t in OrderType} == {
-        'Limit', 'MIT', 'Market', 'QTS', 'Stop', 'StopLimit',
-        'TrailingStop', 'TrailingStopLimit'}
+        'Limit',
+        'MIT',
+        'Market',
+        'QTS',
+        'Stop',
+        'StopLimit',
+        'TrailingStop',
+        'TrailingStopLimit',
+    }
 
 
 def test_time_in_force_matches_published_set():

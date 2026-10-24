@@ -22,14 +22,17 @@ you send anything else. Passing ``client_order_id=`` on an order is the way
 to make a deliberate resend safe.
 """
 
+from __future__ import annotations
+
 import json
 import socket
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
-from .errors import TransportError, ThrottledError, raise_for_status
+from .errors import ThrottledError, TransportError, raise_for_status
 
 DEFAULT_TIMEOUT = 20.0
 DEFAULT_RETRIES = 2
@@ -42,13 +45,13 @@ IDEMPOTENT_METHODS = frozenset({'GET', 'HEAD'})
 NEVER_SENT = (socket.gaierror, ConnectionRefusedError)
 
 
-def _encode(body):
+def _encode(body) -> bytes | None:
     if body is None:
         return None
     return json.dumps(_drop_none(body)).encode('utf-8')
 
 
-def _drop_none(value):
+def _drop_none(value) -> Any:
     """Strip keys whose value is None, recursively.
 
     Tradovate's order models mark most fields optional. Sending an explicit
@@ -62,13 +65,13 @@ def _drop_none(value):
     return value
 
 
-def never_sent(exc):
+def never_sent(exc) -> bool:
     """True when ``exc`` proves the request did not reach the server."""
     reason = getattr(exc, 'reason', None)
     return isinstance(exc, NEVER_SENT) or isinstance(reason, NEVER_SENT)
 
 
-def may_resend(method, exc):
+def may_resend(method, exc) -> bool:
     """Whether a failed request of this method can be safely repeated."""
     if method.upper() in IDEMPOTENT_METHODS:
         return True
@@ -78,17 +81,27 @@ def may_resend(method, exc):
 class Transport:
     """Minimal JSON client for one environment's REST base URL."""
 
-    def __init__(self, base_url, *, timeout=DEFAULT_TIMEOUT,
-                 retries=DEFAULT_RETRIES, sleep=time.sleep):
+    def __init__(
+        self,
+        base_url,
+        *,
+        timeout=DEFAULT_TIMEOUT,
+        retries=DEFAULT_RETRIES,
+        sleep=time.sleep,
+    ) -> None:
         self.base_url = base_url.rstrip('/')
         self.timeout = timeout
         self.retries = max(0, int(retries))
         self._sleep = sleep
 
-    def request(self, method, path, *, token=None, body=None, params=None):
+    def request(self, method, path, *, token=None, body=None, params=None) -> Any:
         if params:
-            path = '%s?%s' % (path, urllib.parse.urlencode(
-                {k: v for k, v in params.items() if v is not None}))
+            path = '%s?%s' % (
+                path,
+                urllib.parse.urlencode(
+                    {k: v for k, v in params.items() if v is not None}
+                ),
+            )
         url = self.base_url + path
         headers = {
             'Accept': 'application/json',
@@ -103,11 +116,11 @@ class Transport:
             attempt += 1
             try:
                 req = urllib.request.Request(
-                    url, data=_encode(body), headers=headers, method=method)
+                    url, data=_encode(body), headers=headers, method=method
+                )
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     raw = resp.read()
-                    raise_for_status(resp.status, path, None,
-                                     dict(resp.headers))
+                    raise_for_status(resp.status, path, None, dict(resp.headers))
                     return self._decode(raw, path)
             except urllib.error.HTTPError as exc:
                 # The server answered, so nothing is ambiguous: a 429 was
@@ -119,8 +132,7 @@ class Transport:
                     pass
                 parsed = self._safe_json(raw)
                 try:
-                    raise_for_status(exc.code, path, parsed,
-                                     dict(exc.headers or {}))
+                    raise_for_status(exc.code, path, parsed, dict(exc.headers or {}))
                 except ThrottledError as throttled:
                     if attempt <= self.retries:
                         self._sleep(throttled.retry_after or 2.0 * attempt)
@@ -134,7 +146,7 @@ class Transport:
                 raise self._transport_error(method, path, exc) from exc
 
     @staticmethod
-    def _transport_error(method, path, exc):
+    def _transport_error(method, path, exc) -> TransportError:
         reason = getattr(exc, 'reason', exc)
         if may_resend(method, exc):
             return TransportError('request failed: %s' % reason, endpoint=path)
@@ -142,22 +154,26 @@ class Transport:
             'request failed after it was sent: %s -- this %s may or may not '
             'have been accepted by Tradovate. Check order and position state '
             'before sending anything else.' % (reason, method.upper()),
-            endpoint=path, ambiguous=True)
+            endpoint=path,
+            ambiguous=True,
+        )
 
     @staticmethod
-    def _safe_json(raw):
+    def _safe_json(raw) -> Any:
         try:
             return json.loads(raw.decode('utf-8'))
         except Exception:
             return raw.decode('utf-8', 'replace')[:500] or None
 
     @staticmethod
-    def _decode(raw, path):
+    def _decode(raw, path) -> Any:
         if not raw:
             return None
         try:
             return json.loads(raw.decode('utf-8'))
         except ValueError as exc:
-            raise TransportError('response was not JSON: %s' % exc,
-                                 endpoint=path,
-                                 body=raw.decode('utf-8', 'replace')[:200])
+            raise TransportError(
+                'response was not JSON: %s' % exc,
+                endpoint=path,
+                body=raw.decode('utf-8', 'replace')[:200],
+            ) from exc

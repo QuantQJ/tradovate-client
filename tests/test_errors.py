@@ -2,9 +2,14 @@
 
 import pytest
 
-from tradovate_client.errors import (AuthError, NotFoundError, RequestError,
-                                     ServerError, ThrottledError,
-                                     raise_for_status)
+from tradovate_client.errors import (
+    AuthError,
+    NotFoundError,
+    RequestError,
+    ServerError,
+    ThrottledError,
+    raise_for_status,
+)
 
 
 @pytest.mark.parametrize('status', [200, 201, 204])
@@ -12,10 +17,18 @@ def test_success_does_not_raise(status):
     assert raise_for_status(status, '/x', None) is None
 
 
-@pytest.mark.parametrize('status,exc', [
-    (401, AuthError), (403, AuthError), (404, NotFoundError),
-    (400, RequestError), (422, RequestError),
-    (500, ServerError), (503, ServerError)])
+@pytest.mark.parametrize(
+    'status,exc',
+    [
+        (401, AuthError),
+        (403, AuthError),
+        (404, NotFoundError),
+        (400, RequestError),
+        (422, RequestError),
+        (500, ServerError),
+        (503, ServerError),
+    ],
+)
 def test_status_maps_to_exception(status, exc):
     with pytest.raises(exc):
         raise_for_status(status, '/order/placeorder', {'errorText': 'nope'})
@@ -23,8 +36,7 @@ def test_status_maps_to_exception(status, exc):
 
 def test_throttle_keeps_the_servers_advice():
     with pytest.raises(ThrottledError) as caught:
-        raise_for_status(429, '/auth/accesstokenrequest', None,
-                         {'Retry-After': '30'})
+        raise_for_status(429, '/auth/accesstokenrequest', None, {'Retry-After': '30'})
     assert caught.value.retry_after == 30.0
 
 

@@ -9,8 +9,15 @@ import pytest
 from tradovate_client import Credentials, Env, TokenStore
 from tradovate_client.errors import AuthError, ConfigError
 
-GOOD = {'name': 'user', 'password': 'pw', 'appId': 'app', 'appVersion': '1.0',
-        'deviceId': 'device', 'cid': 1234, 'sec': 'secret'}
+GOOD = {
+    'name': 'user',
+    'password': 'pw',
+    'appId': 'app',
+    'appVersion': '1.0',
+    'deviceId': 'device',
+    'cid': 1234,
+    'sec': 'secret',
+}
 
 
 def _write_creds(tmp_path, data, mode=0o600):
@@ -52,14 +59,17 @@ def test_credentials_from_environment(monkeypatch):
     for field, value in GOOD.items():
         key = 'TRADOVATE_' + ''.join(
             ('_' + c.upper() if c.isupper() and i else c.upper())
-            for i, c in enumerate(field))
+            for i, c in enumerate(field)
+        )
         monkeypatch.setenv(key, str(value))
     creds = Credentials.from_env()
     assert creds.name == 'user' and creds.sec == 'secret'
 
 
 def test_token_is_cached_per_environment(tmp_path):
-    clock = lambda: 1000.0
+    def clock():
+        return 1000.0
+
     demo = TokenStore(Env.DEMO, directory=tmp_path, clock=clock)
     live = TokenStore(Env.LIVE, directory=tmp_path, clock=clock)
     demo.write({'accessToken': 'demo-token'})
@@ -77,17 +87,16 @@ def test_token_file_is_private(tmp_path):
 
 def test_expiry_is_read_from_tradovates_reply(tmp_path):
     store = TokenStore(Env.DEMO, directory=tmp_path, clock=lambda: 0.0)
-    store.write({'accessToken': 'x',
-                 'expirationTime': '2030-01-01T00:00:00.000Z'})
+    store.write({'accessToken': 'x', 'expirationTime': '2030-01-01T00:00:00.000Z'})
     assert store.read()[1] > 1_800_000_000
 
 
 def test_a_token_close_to_expiry_is_not_fresh(tmp_path):
     now = [1000.0]
     store = TokenStore(Env.DEMO, directory=tmp_path, clock=lambda: now[0])
-    store.write({'accessToken': 'x'})          # assumed 3000s of life
+    store.write({'accessToken': 'x'})  # assumed 3000s of life
     assert store.fresh_enough()
-    now[0] = 1000.0 + 2800.0                    # 200s left, under the margin
+    now[0] = 1000.0 + 2800.0  # 200s left, under the margin
     assert not store.fresh_enough()
 
 
@@ -104,6 +113,7 @@ def test_missing_cache_reads_as_empty(tmp_path):
 
 
 # ── the MEDIUM finding: the token is never briefly world-readable ──────────
+
 
 def test_token_directory_is_private(tmp_path):
     store = TokenStore(Env.DEMO, directory=tmp_path / 'state', clock=lambda: 0.0)

@@ -6,8 +6,16 @@ tolerates fields Tradovate adds later.
 
 from dataclasses import dataclass, field
 
-__all__ = ['Account', 'CashBalance', 'Contract', 'Position', 'Fill', 'Order',
-           'Snapshot', 'PositionView']
+__all__ = [
+    'Account',
+    'CashBalance',
+    'Contract',
+    'Position',
+    'Fill',
+    'Order',
+    'Snapshot',
+    'PositionView',
+]
 
 
 @dataclass
@@ -19,10 +27,14 @@ class Account:
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_api(cls, d):
-        return cls(id=d['id'], name=d.get('name') or str(d['id']),
-                   account_type=d.get('accountType') or '',
-                   active=bool(d.get('active', True)), raw=d)
+    def from_api(cls, d) -> "Account":
+        return cls(
+            id=d['id'],
+            name=d.get('name') or str(d['id']),
+            account_type=d.get('accountType') or '',
+            active=bool(d.get('active', True)),
+            raw=d,
+        )
 
     @property
     def spec(self) -> str:
@@ -38,11 +50,14 @@ class CashBalance:
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_api(cls, d):
+    def from_api(cls, d) -> "CashBalance":
         d = d or {}
-        return cls(total_cash=_f(d.get('totalCashValue')),
-                   open_pnl=_f(d.get('openPnL')),
-                   realized_pnl=_f(d.get('realizedPnL')), raw=d)
+        return cls(
+            total_cash=_f(d.get('totalCashValue')),
+            open_pnl=_f(d.get('openPnL')),
+            realized_pnl=_f(d.get('realizedPnL')),
+            raw=d,
+        )
 
 
 @dataclass
@@ -52,7 +67,7 @@ class Contract:
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_api(cls, d):
+    def from_api(cls, d) -> "Contract":
         return cls(id=d['id'], name=d.get('name') or str(d['id']), raw=d)
 
 
@@ -66,11 +81,15 @@ class Position:
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_api(cls, d):
-        return cls(id=d.get('id'), account_id=d.get('accountId'),
-                   contract_id=d.get('contractId'),
-                   net_pos=int(d.get('netPos') or 0),
-                   net_price=_f(d.get('netPrice')), raw=d)
+    def from_api(cls, d) -> "Position":
+        return cls(
+            id=d.get('id'),
+            account_id=d.get('accountId'),
+            contract_id=d.get('contractId'),
+            net_pos=int(d.get('netPos') or 0),
+            net_price=_f(d.get('netPrice')),
+            raw=d,
+        )
 
     @property
     def is_flat(self) -> bool:
@@ -99,12 +118,17 @@ class Fill:
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_api(cls, d):
-        return cls(id=d.get('id'), order_id=d.get('orderId'),
-                   contract_id=d.get('contractId'),
-                   action=d.get('action') or '', qty=int(d.get('qty') or 0),
-                   price=_f(d.get('price')), timestamp=d.get('timestamp') or '',
-                   raw=d)
+    def from_api(cls, d) -> "Fill":
+        return cls(
+            id=d.get('id'),
+            order_id=d.get('orderId'),
+            contract_id=d.get('contractId'),
+            action=d.get('action') or '',
+            qty=int(d.get('qty') or 0),
+            price=_f(d.get('price')),
+            timestamp=d.get('timestamp') or '',
+            raw=d,
+        )
 
 
 @dataclass
@@ -118,12 +142,16 @@ class Order:
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
-    def from_api(cls, d):
-        return cls(id=d.get('id'), account_id=d.get('accountId'),
-                   contract_id=d.get('contractId'),
-                   action=d.get('action') or '',
-                   order_type=d.get('orderType') or '',
-                   status=d.get('ordStatus') or '', raw=d)
+    def from_api(cls, d) -> "Order":
+        return cls(
+            id=d.get('id'),
+            account_id=d.get('accountId'),
+            contract_id=d.get('contractId'),
+            action=d.get('action') or '',
+            order_type=d.get('orderType') or '',
+            status=d.get('ordStatus') or '',
+            raw=d,
+        )
 
     @property
     def is_working(self) -> bool:
@@ -143,7 +171,7 @@ class Snapshot:
         return not any(p.net_pos for p in self.positions.values())
 
 
-def _f(value, default=0.0):
+def _f(value, default=0.0) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):

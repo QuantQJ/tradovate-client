@@ -6,22 +6,28 @@ common way an automated trading script places an order it did not mean to.
 """
 
 __all__ = [
-    'TradovateError', 'ConfigError', 'TransportError', 'AuthError',
-    'ThrottledError', 'RequestError', 'ServerError', 'NotFoundError',
+    'TradovateError',
+    'ConfigError',
+    'TransportError',
+    'AuthError',
+    'ThrottledError',
+    'RequestError',
+    'ServerError',
+    'NotFoundError',
 ]
 
 
 class TradovateError(Exception):
     """Base class for everything this library raises."""
 
-    def __init__(self, message, *, endpoint=None, status=None, body=None):
+    def __init__(self, message, *, endpoint=None, status=None, body=None) -> None:
         super().__init__(message)
         self.message = message
         self.endpoint = endpoint
         self.status = status
         self.body = body
 
-    def __str__(self):
+    def __str__(self) -> str:
         bits = [self.message]
         if self.endpoint:
             bits.append('endpoint=%s' % self.endpoint)
@@ -45,7 +51,7 @@ class TransportError(TradovateError):
     else. It is False when the failure proves nothing was sent.
     """
 
-    def __init__(self, message, *, ambiguous=False, **kw):
+    def __init__(self, message, *, ambiguous=False, **kw) -> None:
         super().__init__(message, **kw)
         self.ambiguous = ambiguous
 
@@ -60,7 +66,7 @@ class ThrottledError(TradovateError):
     ``retry_after`` is the server's own advice in seconds when it gives one.
     """
 
-    def __init__(self, message, *, retry_after=None, **kw):
+    def __init__(self, message, *, retry_after=None, **kw) -> None:
         super().__init__(message, **kw)
         self.retry_after = retry_after
 
@@ -77,27 +83,36 @@ class ServerError(TradovateError):
     """Any 5xx."""
 
 
-def raise_for_status(status, endpoint, body, headers=None):
+def raise_for_status(status, endpoint, body, headers=None) -> None:
     """Map an HTTP status onto the right exception. Never returns on failure."""
     if 200 <= status < 300:
         return
     headers = headers or {}
     if status in (401, 403):
-        raise AuthError('authentication rejected', endpoint=endpoint,
-                        status=status, body=body)
+        raise AuthError(
+            'authentication rejected', endpoint=endpoint, status=status, body=body
+        )
     if status == 404:
-        raise NotFoundError('no such endpoint or object', endpoint=endpoint,
-                            status=status, body=body)
+        raise NotFoundError(
+            'no such endpoint or object', endpoint=endpoint, status=status, body=body
+        )
     if status == 429:
         after = headers.get('Retry-After')
         try:
             after = float(after) if after is not None else None
         except (TypeError, ValueError):
             after = None
-        raise ThrottledError('rate limited by Tradovate', retry_after=after,
-                             endpoint=endpoint, status=status, body=body)
+        raise ThrottledError(
+            'rate limited by Tradovate',
+            retry_after=after,
+            endpoint=endpoint,
+            status=status,
+            body=body,
+        )
     if 400 <= status < 500:
-        raise RequestError('request rejected', endpoint=endpoint,
-                           status=status, body=body)
-    raise ServerError('Tradovate server error', endpoint=endpoint,
-                      status=status, body=body)
+        raise RequestError(
+            'request rejected', endpoint=endpoint, status=status, body=body
+        )
+    raise ServerError(
+        'Tradovate server error', endpoint=endpoint, status=status, body=body
+    )

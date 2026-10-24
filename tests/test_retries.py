@@ -43,8 +43,9 @@ def transport(monkeypatch, failures, *, retries=2):
 
     monkeypatch.setattr('urllib.request.urlopen', fake_urlopen)
     slept = []
-    t = Transport('https://demo.tradovateapi.com/v1', retries=retries,
-                  sleep=slept.append)
+    t = Transport(
+        'https://demo.tradovateapi.com/v1', retries=retries, sleep=slept.append
+    )
     t.calls = calls
     t.slept = slept
     return t
@@ -57,6 +58,7 @@ RESET = urllib.error.URLError(ConnectionResetError(54, 'Connection reset by peer
 
 
 # ── the rule itself ────────────────────────────────────────────────────────
+
 
 def test_get_is_always_resendable():
     for exc in (TIMEOUT, REFUSED, DNS, RESET):
@@ -76,6 +78,7 @@ def test_never_sent_recognises_the_pre_flight_failures():
 
 
 # ── what the transport actually does ───────────────────────────────────────
+
 
 def test_a_timed_out_read_is_retried(monkeypatch):
     t = transport(monkeypatch, [TIMEOUT, TIMEOUT])
@@ -122,10 +125,15 @@ def test_cancel_and_liquidate_are_held_to_the_same_rule():
 
 # ── throttling is a real answer, so it may be repeated ─────────────────────
 
+
 def throttled(retry_after='1'):
     return urllib.error.HTTPError(
-        'https://demo.tradovateapi.com/v1/auth/accesstokenrequest', 429,
-        'Too Many Requests', {'Retry-After': retry_after}, None)
+        'https://demo.tradovateapi.com/v1/auth/accesstokenrequest',
+        429,
+        'Too Many Requests',
+        {'Retry-After': retry_after},
+        None,
+    )
 
 
 def test_a_throttled_order_is_retried(monkeypatch):

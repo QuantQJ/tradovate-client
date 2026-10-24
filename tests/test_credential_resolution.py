@@ -12,8 +12,15 @@ import pytest
 from tradovate_client import Credentials, Env, TradovateClient
 from tradovate_client.errors import ConfigError
 
-GOOD = {'name': 'user', 'password': 'pw', 'appId': 'app', 'appVersion': '1.0',
-        'deviceId': 'device', 'cid': 1234, 'sec': 'secret'}
+GOOD = {
+    'name': 'user',
+    'password': 'pw',
+    'appId': 'app',
+    'appVersion': '1.0',
+    'deviceId': 'device',
+    'cid': 1234,
+    'sec': 'secret',
+}
 
 
 def write_key(path, data=None):
@@ -43,8 +50,7 @@ def test_a_key_file_in_the_home_directory_is_not_read(tmp_path, monkeypatch):
     home.mkdir()
     write_key(home / '.tradovate_key')
     monkeypatch.setenv('HOME', str(home))
-    monkeypatch.setattr(os.path, 'expanduser',
-                        lambda p: p.replace('~', str(home), 1))
+    monkeypatch.setattr(os.path, 'expanduser', lambda p: p.replace('~', str(home), 1))
     with pytest.raises(ConfigError, match='no credentials were given'):
         TradovateClient(Env.DEMO).credentials
 
@@ -87,8 +93,7 @@ def test_an_explicit_path_wins_over_the_environment(tmp_path, monkeypatch):
 
 
 def test_a_named_file_that_is_missing_says_so(tmp_path):
-    client = TradovateClient(Env.DEMO,
-                             credential_path=str(tmp_path / 'absent.json'))
+    client = TradovateClient(Env.DEMO, credential_path=str(tmp_path / 'absent.json'))
     with pytest.raises(ConfigError, match='no credential file'):
         client.credentials
 
