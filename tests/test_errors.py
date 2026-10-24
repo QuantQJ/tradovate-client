@@ -110,3 +110,60 @@ def test_a_plain_body_is_untouched():
     assert RequestError('x', body={'errorText': 'bad symbol'}).body == {
         'errorText': 'bad symbol'
     }
+
+
+# ── redaction has to cover raw text and any capitalisation ──────────────────
+
+
+@pytest.mark.parametrize(
+    'key',
+    [
+        'accessToken',
+        'AccessToken',
+        'ACCESSTOKEN',
+        'Password',
+        'P-Ticket',
+        'mdAccessToken',
+        'MDAccessToken',
+        'Sec',
+        'API_KEY',
+    ],
+)
+def test_keys_are_matched_whatever_their_case(key):
+    """Tradovate's own docs capitalise field names while its JSON does not."""
+    from tradovate_client.errors import redact
+
+    assert redact({key: 'LEAK'})[key] == '[redacted]'
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        '{"accessToken":"LEAK","userStatus":"Closed"}',
+        "{'p-ticket': 'LEAK', 'p-time': 15}",
+        '<html>AccessToken: LEAK</html>',
+        'name=u&password=LEAK&cid=1',
+        'sec: LEAK',
+        'MDAccessToken=LEAK;',
+    ],
+)
+def test_a_raw_text_body_is_redacted_too(text):
+    """A response that is not valid JSON is stored as text, and text would
+    otherwise pass through untouched."""
+    from tradovate_client.errors import redact
+
+    assert 'LEAK' not in redact(text)
+
+
+def test_a_text_body_keeps_the_part_worth_reading():
+    from tradovate_client.errors import redact
+
+    assert redact('errorText: Invalid credentials') == 'errorText: Invalid credentials'
+
+
+def test_a_non_json_auth_response_cannot_leak_through_the_exception():
+    from tradovate_client.errors import AuthError
+
+    exc = AuthError('refused', body='{"accessToken":"LEAK","errorText":"nope"}')
+    assert 'LEAK' not in str(exc)
+    assert 'nope' in str(exc)

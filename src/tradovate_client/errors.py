@@ -5,6 +5,8 @@ a caller might mistake for a successful result -- which is the single most
 common way an automated trading script places an order it did not mean to.
 """
 
+import re
+
 #: Tradovate reports an order's fate in ``failureReason`` on an HTTP 200.
 #: ``Success`` is one of the documented values, so the field being present
 #: does not mean the order failed -- only a value other than ``Success`` does.
@@ -43,7 +45,9 @@ __all__ = [
 
 #: Keys whose values never belong in an exception, a log line or a traceback.
 #: ``accessToken`` and ``mdAccessToken`` are bearer tokens; ``p-ticket`` is a
-#: single-use authentication ticket; the rest are credentials.
+#: single-use authentication ticket; the rest are credentials. Compared
+#: case-insensitively, because Tradovate's own documentation capitalises its
+#: field names (``AccessToken``) while the JSON uses camelCase.
 SENSITIVE_KEYS = frozenset(
     {
         'accessToken',
@@ -58,22 +62,46 @@ SENSITIVE_KEYS = frozenset(
     }
 )
 
+_SENSITIVE_LOWER = frozenset(k.lower() for k in SENSITIVE_KEYS)
+
 REDACTED = '[redacted]'
+
+#: Matches a sensitive field inside *text*, which matters because a response
+#: that is not valid JSON is stored as a raw string -- and a string body would
+#: otherwise pass through untouched. Covers both JSON and query-string shapes.
+_SENSITIVE_IN_TEXT = re.compile(
+    r"""(["']?)(%s)\1\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^,&}\s]*)"""
+    % '|'.join(re.escape(k) for k in sorted(SENSITIVE_KEYS, key=len, reverse=True)),
+    re.IGNORECASE,
+)
+
+
+def _redact_text(text):
+    """Blank the value of any sensitive field mentioned in a string."""
+
+    def swap(match):
+        quote, key = match.group(1), match.group(2)
+        return '%s%s%s: "%s"' % (quote, key, quote, REDACTED)
+
+    return _SENSITIVE_IN_TEXT.sub(swap, text)
 
 
 def redact(value):
     """Replace the value of any sensitive key, at any depth.
 
     Applied to every exception body, so no error path can print a token --
-    including the ones that carry an authentication reply or a penalty ticket.
+    including an authentication reply, a penalty ticket, and a response body
+    that was not valid JSON and is therefore held as raw text.
     """
     if isinstance(value, dict):
         return {
-            k: (REDACTED if k in SENSITIVE_KEYS else redact(v))
+            k: (REDACTED if str(k).lower() in _SENSITIVE_LOWER else redact(v))
             for k, v in value.items()
         }
     if isinstance(value, (list, tuple)):
         return type(value)(redact(v) for v in value)
+    if isinstance(value, str):
+        return _redact_text(value)
     return value
 
 
