@@ -51,3 +51,62 @@ def test_error_message_carries_the_endpoint_and_body():
         raise_for_status(400, '/order/placeorder', {'errorText': 'bad symbol'})
     text = str(caught.value)
     assert '/order/placeorder' in text and 'bad symbol' in text
+
+
+# ── no exception may carry a token ──────────────────────────────────────────
+
+
+def test_an_auth_reply_is_redacted_before_it_reaches_the_exception():
+    from tradovate_client.errors import AuthError
+
+    exc = AuthError('refused', body={'accessToken': 'SECRET', 'userStatus': 'Closed'})
+    assert exc.body['accessToken'] == '[redacted]'
+    assert exc.body['userStatus'] == 'Closed', 'the useful part survives'
+    assert 'SECRET' not in str(exc)
+
+
+def test_a_penalty_ticket_is_redacted_in_the_body_but_kept_as_an_attribute():
+    from tradovate_client.errors import TimePenalty
+
+    exc = TimePenalty(
+        'throttled',
+        seconds=15,
+        ticket='TICKET-X',
+        body={'p-ticket': 'TICKET-X', 'p-time': 15},
+    )
+    assert 'TICKET-X' not in str(exc)
+    assert exc.body['p-ticket'] == '[redacted]'
+    assert exc.ticket == 'TICKET-X', 'the caller still needs it'
+
+
+def test_redaction_reaches_nested_values():
+    from tradovate_client.errors import RequestError
+
+    exc = RequestError('x', body={'outer': {'password': 'hunter2', 'keep': 1}})
+    assert exc.body['outer']['password'] == '[redacted]'
+    assert exc.body['outer']['keep'] == 1
+
+
+def test_redaction_survives_a_list():
+    from tradovate_client.errors import RequestError
+
+    exc = RequestError('x', body=[{'sec': 's'}, {'ok': 2}])
+    assert exc.body[0]['sec'] == '[redacted]'
+    assert exc.body[1]['ok'] == 2
+
+
+def test_every_sensitive_key_is_covered():
+    from tradovate_client.errors import SENSITIVE_KEYS, RequestError
+
+    body = dict.fromkeys(SENSITIVE_KEYS, 'LEAK')
+    exc = RequestError('x', body=body)
+    assert 'LEAK' not in str(exc)
+    assert set(exc.body.values()) == {'[redacted]'}
+
+
+def test_a_plain_body_is_untouched():
+    from tradovate_client.errors import RequestError
+
+    assert RequestError('x', body={'errorText': 'bad symbol'}).body == {
+        'errorText': 'bad symbol'
+    }

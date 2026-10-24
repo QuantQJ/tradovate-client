@@ -20,6 +20,8 @@ PENALTY_CAPTCHA = 'p-captcha'
 
 __all__ = [
     'SUCCESS_REASON',
+    'SENSITIVE_KEYS',
+    'redact',
     'PENALTY_TICKET',
     'PENALTY_TIME',
     'PENALTY_CAPTCHA',
@@ -39,6 +41,42 @@ __all__ = [
 ]
 
 
+#: Keys whose values never belong in an exception, a log line or a traceback.
+#: ``accessToken`` and ``mdAccessToken`` are bearer tokens; ``p-ticket`` is a
+#: single-use authentication ticket; the rest are credentials.
+SENSITIVE_KEYS = frozenset(
+    {
+        'accessToken',
+        'mdAccessToken',
+        'password',
+        'sec',
+        'secret',
+        'apiKey',
+        'api_key',
+        'p-ticket',
+        'p-captcha',
+    }
+)
+
+REDACTED = '[redacted]'
+
+
+def redact(value):
+    """Replace the value of any sensitive key, at any depth.
+
+    Applied to every exception body, so no error path can print a token --
+    including the ones that carry an authentication reply or a penalty ticket.
+    """
+    if isinstance(value, dict):
+        return {
+            k: (REDACTED if k in SENSITIVE_KEYS else redact(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return type(value)(redact(v) for v in value)
+    return value
+
+
 class TradovateError(Exception):
     """Base class for everything this library raises."""
 
@@ -47,7 +85,9 @@ class TradovateError(Exception):
         self.message = message
         self.endpoint = endpoint
         self.status = status
-        self.body = body
+        # Redacted on the way in, so an exception cannot carry a token even if
+        # it is caught, re-raised, pickled or logged by someone else.
+        self.body = redact(body)
 
     def __str__(self) -> str:
         bits = [self.message]
