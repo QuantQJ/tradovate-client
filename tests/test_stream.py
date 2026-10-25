@@ -126,7 +126,7 @@ class FakeServer:
 
 ACCOUNT = {'id': 7, 'name': 'DEMO7', 'userId': 99}
 SYNC = {
-    'contracts': [{'id': 11, 'name': 'MNQZ6'}],
+    'contracts': [{'id': 11, 'name': 'ABCZ6'}],
     'positions': [{'contractId': 11, 'netPos': 2}],
     'cashBalances': [{'totalCashValue': 50000.0}],
 }
@@ -262,10 +262,10 @@ def test_a_refused_authorization_raises():
 
 
 def test_a_request_gets_its_own_answer():
-    s = socket({'contract/find': {'id': 11, 'name': 'MNQZ6'}})
+    s = socket({'contract/find': {'id': 11, 'name': 'ABCZ6'}})
     try:
         s.connect()
-        assert s.request('contract/find', 'name=MNQZ6')['name'] == 'MNQZ6'
+        assert s.request('contract/find', 'name=ABCZ6')['name'] == 'ABCZ6'
     finally:
         s.close()
 
@@ -371,7 +371,7 @@ def test_the_snapshot_replaces_polling():
     s = socket()
     try:
         s.connect()
-        assert s.positions() == {'MNQZ6': 2}
+        assert s.positions() == {'ABCZ6': 2}
         assert s.position(11) == 2
         assert s.state['account_id'] == 7
         assert s.state['account_spec'] == 'DEMO7'
@@ -431,7 +431,7 @@ def test_a_position_event_updates_the_state():
                 break
             time.sleep(0.01)
         assert s.position(11) == -3
-        assert s.positions() == {'MNQZ6': -3}
+        assert s.positions() == {'ABCZ6': -3}
     finally:
         s.close()
 
@@ -507,13 +507,13 @@ def test_a_market_order_uses_the_same_builder_as_rest():
     s = socket({'order/placeorder': {'orderId': 4242}})
     try:
         s.connect()
-        assert s.market('Buy', 'MNQZ6', 2) == {'orderId': 4242}
+        assert s.market('Buy', 'ABCZ6', 2) == {'orderId': 4242}
         body = s.server.body_of('order/placeorder')
         assert body == {
             'accountId': 7,
             'accountSpec': 'DEMO7',
             'action': 'Buy',
-            'symbol': 'MNQZ6',
+            'symbol': 'ABCZ6',
             'orderQty': 2,
             'orderType': 'Market',
             'timeInForce': 'Day',
@@ -527,7 +527,7 @@ def test_a_limit_order_carries_its_price():
     s = socket({'order/placeorder': {'orderId': 1}})
     try:
         s.connect()
-        s.limit('Buy', 'MNQZ6', 1, 20150.25)
+        s.limit('Buy', 'ABCZ6', 1, 20150.25)
         body = s.server.body_of('order/placeorder')
         assert body['orderType'] == 'Limit' and body['price'] == 20150.25
     finally:
@@ -538,7 +538,7 @@ def test_a_stop_limit_carries_both_prices():
     s = socket({'order/placeorder': {'orderId': 1}})
     try:
         s.connect()
-        s.stop_limit('Sell', 'MNQZ6', 1, 20095.0, 20100.0)
+        s.stop_limit('Sell', 'ABCZ6', 1, 20095.0, 20100.0)
         body = s.server.body_of('order/placeorder')
         assert body['price'] == 20095.0 and body['stopPrice'] == 20100.0
     finally:
@@ -550,7 +550,7 @@ def test_a_bad_order_is_refused_before_it_reaches_the_socket():
     try:
         s.connect()
         with pytest.raises(ConfigError, match='needs price'):
-            s.place(action='Buy', symbol='MNQZ6', qty=1, order_type='Limit')
+            s.place(action='Buy', symbol='ABCZ6', qty=1, order_type='Limit')
         assert 'order/placeorder' not in s.server.requests
     finally:
         s.close()
@@ -559,7 +559,7 @@ def test_a_bad_order_is_refused_before_it_reaches_the_socket():
 def test_placing_before_a_sync_is_refused():
     s = socket()
     with pytest.raises(ConfigError, match='not synced'):
-        s.market('Buy', 'MNQZ6', 1)
+        s.market('Buy', 'ABCZ6', 1)
 
 
 def test_cancel_and_liquidate():

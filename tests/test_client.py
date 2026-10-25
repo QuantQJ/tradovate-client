@@ -95,7 +95,7 @@ def test_market_order_payload_reaches_the_endpoint(tmp_path):
         },
         token_dir=tmp_path,
     )
-    assert client.market(Action.BUY, 'MNQZ6', 1) == {'orderId': 99}
+    assert client.market(Action.BUY, 'ABCZ6', 1) == {'orderId': 99}
     sent = [c for c in client._transport.calls if c['path'] == '/order/placeorder'][0][
         'body'
     ]
@@ -132,7 +132,7 @@ def test_snapshot_names_only_held_contracts(tmp_path):
                 },
                 {'id': 2, 'accountId': 7, 'contractId': 12, 'netPos': 0},
             ],
-            '/contract/item': {'id': 11, 'name': 'MNQZ6'},
+            '/contract/item': {'id': 11, 'name': 'ABCZ6'},
             '/cashBalance/getcashbalancesnapshot': {
                 'totalCashValue': 50000.0,
                 'openPnL': 25.0,
@@ -142,8 +142,8 @@ def test_snapshot_names_only_held_contracts(tmp_path):
         token_dir=tmp_path,
     )
     snap = client.snapshot()
-    assert set(snap.positions) == {'MNQZ6'}
-    assert snap.positions['MNQZ6'].net_pos == 2
+    assert set(snap.positions) == {'ABCZ6'}
+    assert snap.positions['ABCZ6'].net_pos == 2
     assert snap.cash.total_cash == 50000.0 and snap.cash.open_pnl == 25.0
     assert not snap.is_flat
     assert not any(c['path'] == '/contract/list' for c in client._transport.calls)
@@ -158,7 +158,7 @@ def test_bracketed_market_uses_the_opposite_side_for_its_children(tmp_path):
         token_dir=tmp_path,
     )
     client.bracketed_market(
-        Action.BUY, 'MNQZ6', 1, take_profit=20200.0, stop_loss=20050.0
+        Action.BUY, 'ABCZ6', 1, take_profit=20200.0, stop_loss=20050.0
     )
     body = [c for c in client._transport.calls if c['path'] == '/order/placeoso'][0][
         'body'
@@ -183,7 +183,7 @@ def test_bracketed_market_uses_the_opposite_side_for_its_children(tmp_path):
 def test_bracket_needs_at_least_one_child(tmp_path):
     client = build({'/account/list': [{'id': 7, 'name': 'DEMO7'}]}, token_dir=tmp_path)
     with pytest.raises(ConfigError, match='take_profit'):
-        client.bracketed_market(Action.BUY, 'MNQZ6', 1)
+        client.bracketed_market(Action.BUY, 'ABCZ6', 1)
 
 
 def test_cancel_working_only_cancels_working_orders(tmp_path):

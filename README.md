@@ -8,7 +8,7 @@ from tradovate_client import TradovateClient, Env, Action
 client = TradovateClient(Env.DEMO, credential_path="~/my-tradovate-key.json")
 
 print(client.snapshot())
-client.limit(Action.BUY, "MNQZ6", 1, price=20150.25)
+client.limit(Action.BUY, "ABCZ6", 1, price=20150.25)
 ```
 
 No dependencies. The REST client is standard library only.
@@ -141,11 +141,11 @@ client.positions()  # this account's positions only
 client.orders()  # every order
 client.working_orders()  # just the live ones
 client.fills_for_order(order_id)  # what it actually traded at
-client.find_contract("MNQZ6")  # Contract(id=..., name="MNQZ6")
+client.find_contract("ABCZ6")  # Contract(id=..., name="ABCZ6")
 
 snap = client.snapshot()  # one object for a dashboard poller
 snap.cash.open_pnl
-snap.positions["MNQZ6"].net_pos
+snap.positions["ABCZ6"].net_pos
 snap.is_flat
 ```
 
@@ -161,13 +161,13 @@ The eight types Tradovate's own `OrderType` lists — `Market`, `Limit`,
 `Stop`, `StopLimit`, `TrailingStop`, `TrailingStopLimit`, `MIT` and `QTS`:
 
 ```python
-client.market(Action.BUY, "MNQZ6", 2)
-client.limit(Action.BUY, "MNQZ6", 2, price=20150.25)
-client.stop(Action.SELL, "MNQZ6", 2, stop_price=20100.00)
-client.stop_limit(Action.SELL, "MNQZ6", 2, price=20095.00, stop_price=20100.00)
-client.trailing_stop(Action.SELL, "MNQZ6", 2, stop_price=20100.00)
-client.trailing_stop_limit(Action.SELL, "MNQZ6", 2, price=20095.0, stop_price=20100.0)
-client.market_if_touched(Action.BUY, "MNQZ6", 2, price=20050.00)
+client.market(Action.BUY, "ABCZ6", 2)
+client.limit(Action.BUY, "ABCZ6", 2, price=20150.25)
+client.stop(Action.SELL, "ABCZ6", 2, stop_price=20100.00)
+client.stop_limit(Action.SELL, "ABCZ6", 2, price=20095.00, stop_price=20100.00)
+client.trailing_stop(Action.SELL, "ABCZ6", 2, stop_price=20100.00)
+client.trailing_stop_limit(Action.SELL, "ABCZ6", 2, price=20095.0, stop_price=20100.0)
+client.market_if_touched(Action.BUY, "ABCZ6", 2, price=20050.00)
 ```
 
 Any of them takes `time_in_force`, `expire_time`, `max_show`,
@@ -177,7 +177,7 @@ Any of them takes `time_in_force`, `expire_time`, `max_show`,
 ```python
 from tradovate_client import TimeInForce
 
-client.limit(Action.BUY, "MNQZ6", 1, price=20150.0, time_in_force=TimeInForce.GTC)
+client.limit(Action.BUY, "ABCZ6", 1, price=20150.0, time_in_force=TimeInForce.GTC)
 ```
 
 ### Brackets
@@ -187,7 +187,7 @@ An entry with a target and a stop attached, in one call:
 ```python
 client.bracketed_market(
     Action.BUY,
-    "MNQZ6",
+    "ABCZ6",
     1,
     take_profit=20200.00,
     stop_loss=20050.00,
@@ -207,7 +207,7 @@ stop = client.bracket_leg(Action.SELL, OrderType.STOP, stop_price=20050.0)
 
 client.place_oso(
     action=Action.BUY,
-    symbol="MNQZ6",
+    symbol="ABCZ6",
     qty=1,
     order_type=OrderType.MARKET,
     bracket1=target,
@@ -216,7 +216,7 @@ client.place_oso(
 
 client.place_oco(
     action=Action.SELL,
-    symbol="MNQZ6",
+    symbol="ABCZ6",
     qty=1,
     order_type=OrderType.LIMIT,
     price=20200.0,
@@ -240,7 +240,7 @@ client.cost_of_order(4242)
 Round trips come matched by the broker, not reassembled by you:
 
 ```python
-client.round_trips("MNQ")
+client.round_trips("ABC")
 # [{'id': 7, 'qty': 2, 'buy_price': 20100.0, 'sell_price': 20110.0,
 #   'points': 20.0, 'gross': 40.0, 'active': False}]
 ```
@@ -255,7 +255,7 @@ pair.points  # 20.0
 pair.gross(2.0)  # 40.0
 pair.net(2.0, client.fill_fees())  # gross less both legs' charges
 
-product = client.find_product("MNQ")
+product = client.find_product("ABC")
 product.value_per_point, product.tick_size, product.tick_value
 ```
 
@@ -284,7 +284,7 @@ rest = TradovateClient(Env.DEMO, credential_path="/secure/key.json")
 with TradovateSocket(Env.DEMO, client=rest) as stream:
     print(stream.positions())  # from the snapshot, no request
     stream.on("fill", lambda f: print("filled at", f["price"]))
-    stream.market("Buy", "MNQZ6", 1)  # no handshake
+    stream.market("Buy", "ABCZ6", 1)  # no handshake
 ```
 
 Three things it buys:
@@ -300,15 +300,15 @@ function the REST client uses and unset fields are stripped the same way, so
 a socket order and a REST order are byte-for-byte identical.
 
 ```python
-stream.limit("Buy", "MNQZ6", 1, 20150.25)
-stream.stop("Sell", "MNQZ6", 1, 20100.00)
-stream.stop_limit("Sell", "MNQZ6", 1, 20095.00, 20100.00)
+stream.limit("Buy", "ABCZ6", 1, 20150.25)
+stream.stop("Sell", "ABCZ6", 1, 20100.00)
+stream.stop_limit("Sell", "ABCZ6", 1, 20095.00, 20100.00)
 stream.cancel(order_id)
 stream.liquidate(contract_id)
 
 stream.last_fill()  # Fill, with the price Tradovate reported
 stream.position(11)  # from the streamed state
-stream.request("contract/find", "name=MNQZ6")  # anything else
+stream.request("contract/find", "name=ABCZ6")  # anything else
 ```
 
 Events you can subscribe to: `fill`, `position`, `order`, `cash`, `props`. A
@@ -335,7 +335,7 @@ from tradovate_client import (
 )
 
 try:
-    client.market(Action.BUY, "MNQZ6", 1)
+    client.market(Action.BUY, "ABCZ6", 1)
 except ThrottledError as exc:
     wait = exc.retry_after  # the server's own advice, when it gives one
 except RequestError as exc:

@@ -76,7 +76,7 @@ class TradovateSocket:
         with TradovateSocket(Env.DEMO, client=rest) as stream:
             print(stream.positions())
             stream.on('fill', lambda fill: print('filled at', fill['price']))
-            stream.market('Buy', 'MNQZ6', 1)
+            stream.market('Buy', 'ABCZ6', 1)
 
     Needs ``websocket-client``: ``pip install "tradovate-client[socket]"``.
     """

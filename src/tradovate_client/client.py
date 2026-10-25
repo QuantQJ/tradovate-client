@@ -444,7 +444,7 @@ class TradovateClient:
         return Product.from_api(d)
 
     def find_product(self, name) -> Product:
-        """A product by name, e.g. ``MNQ``.
+        """A product by name, e.g. ``ABC``.
 
         Carries ``value_per_point`` and ``tick_size``, which is what turns a
         move in points into a number of dollars.

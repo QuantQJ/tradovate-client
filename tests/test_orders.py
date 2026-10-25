@@ -11,7 +11,7 @@ BASE = {
     'account_id': 12345,
     'account_spec': 'DEMO1234',
     'action': Action.BUY,
-    'symbol': 'MNQZ6',
+    'symbol': 'ABCZ6',
     'qty': 2,
 }
 
@@ -22,7 +22,7 @@ def test_market_order_body():
         'accountId': 12345,
         'accountSpec': 'DEMO1234',
         'action': 'Buy',
-        'symbol': 'MNQZ6',
+        'symbol': 'ABCZ6',
         'orderQty': 2,
         'orderType': 'Market',
         'timeInForce': 'Day',

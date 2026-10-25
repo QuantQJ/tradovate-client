@@ -145,7 +145,7 @@ def test_a_losing_pair_is_negative():
 
 
 def test_money_needs_the_contracts_own_multiplier():
-    """MNQ is $2 a point. This library will not assume that."""
+    """The point value is the broker's to report, not ours to assume."""
     pair = FillPair.from_api(PAIR)
     assert pair.gross(2.0) == 40.0
     assert pair.gross(20.0) == 400.0, 'the same points, a different contract'
@@ -170,7 +170,7 @@ def test_net_accepts_a_plain_number_too():
 
 PRODUCT = {
     'id': 42,
-    'name': 'MNQ',
+    'name': 'ABC',
     'productType': 'Futures',
     'valuePerPoint': 2.0,
     'tickSize': 0.25,
@@ -180,7 +180,7 @@ PRODUCT = {
 
 def test_a_product_carries_what_makes_prices_mean_money():
     product = Product.from_api(PRODUCT)
-    assert product.name == 'MNQ'
+    assert product.name == 'ABC'
     assert product.value_per_point == 2.0
     assert product.tick_size == 0.25
 
@@ -273,10 +273,10 @@ def test_pairs_for_a_position_use_ldeps(tmp_path):
 
 def test_a_product_is_found_by_name(tmp_path):
     client = build({'/product/find': PRODUCT}, tmp_path)
-    product = client.find_product('MNQ')
+    product = client.find_product('ABC')
     assert product.value_per_point == 2.0
     call = [c for c in client._transport.calls if c['path'] == '/product/find'][0]
-    assert call['params'] == {'name': 'MNQ'}
+    assert call['params'] == {'name': 'ABC'}
 
 
 def test_an_unknown_product_raises(tmp_path):
@@ -290,9 +290,9 @@ def test_an_unknown_product_raises(tmp_path):
 
 def test_round_trips_fetch_the_multiplier_from_the_product(tmp_path):
     client = build({'/fillPair/list': [PAIR], '/product/find': PRODUCT}, tmp_path)
-    rows = client.round_trips('MNQ')
+    rows = client.round_trips('ABC')
     assert rows[0]['points'] == 20.0
-    assert rows[0]['gross'] == 40.0, "Tradovate's own $2 a point"
+    assert rows[0]['gross'] == 40.0, 'the value the fixture\'s own response gives'
 
 
 def test_round_trips_accept_your_own_multiplier(tmp_path):
