@@ -247,3 +247,56 @@ def test_a_fresh_token_makes_no_request_at_all(tmp_path):
     )
     assert client.token() == 'good'
     assert client._transport.calls == []
+
+
+# ── modify ──────────────────────────────────────────────────────────────────
+# Tradovate's /order/modifyorder replaces the order rather than patching it:
+# orderQty is required on every call. A caller who only means to move a price
+# still has to resend the size, so modify fills in whatever it was not given
+# from the order's current version. Live demo rejected the old behaviour with
+# 'missing required field "orderQty"'.
+
+VERSION = {
+    'id': 11,
+    'orderId': 11,
+    'orderQty': 3,
+    'orderType': 'Limit',
+    'price': 20150.25,
+    'timeInForce': 'Day',
+}
+
+
+def test_modify_a_price_resends_the_size_tradovate_requires(tmp_path):
+    client = build(
+        {
+            '/orderVersion/deps': [VERSION],
+            '/order/modifyorder': {'orderId': 11},
+        },
+        token_dir=tmp_path,
+    )
+    client.modify(11, price=20200.0)
+    sent = [c for c in client._transport.calls if c['path'] == '/order/modifyorder'][0]
+    assert sent['body']['orderQty'] == 3
+    assert sent['body']['orderType'] == 'Limit'
+    assert sent['body']['price'] == 20200.0
+
+
+def test_modify_does_not_look_up_what_the_caller_supplied(tmp_path):
+    client = build({'/order/modifyorder': {'orderId': 11}}, token_dir=tmp_path)
+    client.modify(11, qty=5, order_type='Limit', price=1.0)
+    paths = [c['path'] for c in client._transport.calls]
+    assert '/orderVersion/deps' not in paths
+    sent = [c for c in client._transport.calls if c['path'] == '/order/modifyorder'][0]
+    assert sent['body']['orderQty'] == 5
+
+
+def test_modify_keeps_a_stop_price_it_was_not_asked_to_change(tmp_path):
+    stop = dict(VERSION, orderType='StopLimit', stopPrice=20100.0)
+    client = build(
+        {'/orderVersion/deps': [stop], '/order/modifyorder': {'orderId': 11}},
+        token_dir=tmp_path,
+    )
+    client.modify(11, price=20200.0)
+    sent = [c for c in client._transport.calls if c['path'] == '/order/modifyorder'][0]
+    assert sent['body']['stopPrice'] == 20100.0
+    assert sent['body']['orderType'] == 'StopLimit'

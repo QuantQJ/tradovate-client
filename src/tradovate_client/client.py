@@ -712,6 +712,24 @@ class TradovateClient:
         custom_tag_50=None,
         is_automated=True,
     ) -> Any:
+        # Tradovate's modifyorder replaces the order rather than patching it:
+        # orderQty is required on every call, and orderType with it. A caller
+        # who only means to move a price still has to resend the size, so
+        # anything not passed is read back off the order's current version.
+        # Without this the endpoint answers 400 'missing required field
+        # "orderQty"' and the order is left exactly as it was.
+        if qty is None or order_type is None:
+            current = self._current_order_version(order_id)
+            if qty is None:
+                qty = current.get('orderQty')
+            if order_type is None:
+                order_type = current.get('orderType')
+            if price is None:
+                price = current.get('price')
+            if stop_price is None:
+                stop_price = current.get('stopPrice')
+            if time_in_force is None:
+                time_in_force = current.get('timeInForce')
         body = {
             'orderId': int(order_id),
             'clOrdId': client_order_id,
@@ -729,6 +747,13 @@ class TradovateClient:
             'isAutomated': bool(is_automated),
         }
         return self._order_post('/order/modifyorder', body)
+
+    def _current_order_version(self, order_id) -> dict:
+        """The order's latest version, which is what a modify has to resend."""
+        versions = self._get('/orderVersion/deps', masterid=int(order_id))
+        if isinstance(versions, list) and versions:
+            return versions[-1] or {}
+        return {}
 
     def cancel(
         self, order_id, *, client_order_id=None, custom_tag_50=None, is_automated=True
