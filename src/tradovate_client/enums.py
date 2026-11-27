@@ -7,6 +7,8 @@ Every value here is copied from Tradovate's own published material:
   ``tradovate/example-api-csharp-trading`` (``PlaceOSO.md``, ``PlaceOCO.md``,
   ``ModifyOrder.md``), which all agree.
 * ``Action`` and ``TimeInForce`` -- the same generated model docs.
+* ``ChartType`` and ``ElementSizeUnit`` -- the ``md/getChart`` parameters in
+  ``tradovate/example-api-js``, ``tutorial/WebSockets/EX-10-Chart-Data``.
 
 Nothing in this module is inferred. If Tradovate adds a value, add it here;
 do not guess at one.
@@ -14,7 +16,14 @@ do not guess at one.
 
 from enum import Enum
 
-__all__ = ['Env', 'Action', 'OrderType', 'TimeInForce']
+__all__ = [
+    'Env',
+    'Action',
+    'OrderType',
+    'TimeInForce',
+    'ChartType',
+    'ElementSizeUnit',
+]
 
 
 class Env(str, Enum):
@@ -39,6 +48,7 @@ class Env(str, Enum):
 
     @property
     def market_data_url(self) -> str:
+        """The market data socket. One host serves both environments."""
         return 'wss://md.tradovateapi.com/v1/websocket'
 
     @property
@@ -72,3 +82,25 @@ class TimeInForce(str, Enum):
     GTC = 'GTC'
     GTD = 'GTD'
     IOC = 'IOC'
+
+
+class ChartType(str, Enum):
+    """``chartDescription.underlyingType`` on a chart request."""
+
+    TICK = 'Tick'
+    DAILY_BAR = 'DailyBar'
+    MINUTE_BAR = 'MinuteBar'
+    CUSTOM = 'Custom'
+    DOM = 'DOM'
+
+
+class ElementSizeUnit(str, Enum):
+    """``chartDescription.elementSizeUnit`` on a chart request."""
+
+    VOLUME = 'Volume'
+    RANGE = 'Range'
+    UNDERLYING_UNITS = 'UnderlyingUnits'
+    RENKO = 'Renko'
+    MOMENTUM_RANGE = 'MomentumRange'
+    POINT_AND_FIGURE = 'PointAndFigure'
+    OFA_RANGE = 'OFARange'

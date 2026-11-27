@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.2.0
+
+Market data, sockets that stay up, and penalties handled everywhere.
+
+- `MarketDataSocket`: quotes, depth of market, volume histograms, bars and
+  ticks from Tradovate's market data socket.
+  - `subscribe_quote`, `subscribe_dom`, `subscribe_histogram`, each returning
+    a handle with `cancel()`. Messages are routed by contract id; two handlers
+    on one contract share a subscription.
+  - `Quote` exposes bid, ask, last, sizes, volume, high, low, open, settlement
+    and open interest. An entry Tradovate left out is `None`, not zero.
+  - `chart()` for a live chart, and `bars()` / `ticks()` as one blocking call
+    each. Bars are held by timestamp, so the forming bar is replaced rather
+    than repeated. Tick packets are decoded the way Tradovate documents:
+    `timestamp = bt + t`, `price = (bp + p) * ts`.
+  - `history()` pages through Tradovate's variable cap on one chart request,
+    following the procedure in their FAQ.
+  - Authorizes with `mdAccessToken`, which the token cache now keeps beside
+    the access token; falls back to the access token when there is none.
+  - A chart packet that arrives before the caller has been handed its
+    subscription ids is held and claimed, not dropped.
+- Both sockets reconnect. A fresh token, a new connection, the authorize
+  handshake, then a new snapshot (user socket) or the subscriptions sent again
+  (market data). `disconnect`, `reconnect` and `error` events;
+  `reconnect_delays=` and `max_reconnects=`. A request in flight when the
+  socket died is never repeated. Reconnection stops on a captcha or missing
+  credentials instead of extending a penalty.
+- A new snapshot replaces the streamed state rather than merging into it, and
+  a fill that happened while the socket was down is delivered as a `fill`
+  event.
+- Handlers run on their own thread, so a handler can send a request -- place
+  an order from a fill -- and a slow handler cannot hold up the heartbeat.
+  Before this, a request made from inside a handler waited on a reply that
+  nothing was left to read.
+- The user socket checks `failureReason` on order replies and raises
+  `OrderRejected`, as REST already did. Before this a refused order came back
+  from the socket as an ordinary reply.
+- The user socket streams orders: `orders()`, `working_orders()`, `order()`,
+  `fills_for_order()` and `wait_for_order()`. It gained `modify`, `place_oso`,
+  `place_oco`, `bracketed_market`, `cancel_working` and order strategies, all
+  built by the same functions REST uses.
+- The user socket keeps only the account it is bound to. The snapshot covers
+  the whole login, and another account's positions, orders and cash were
+  previously folded into the same state.
+- A time penalty is handled on every endpoint, not only on login: a penalised
+  `POST` is waited out and sent again with the ticket, and so is any socket
+  request. A penalised `GET` raises `TimePenalty`. Before this a penalty reply
+  to an ordinary call was returned as if it were the result.
+- Order strategies: `bracket_strategy`, `start_order_strategy`,
+  `interrupt_order_strategy`, `order_strategies`.
+- Contracts: `suggest_contracts`, `roll_contract`, `contract_maturity`.
+- `CashBalance` carries net liquidation value, total P&L, initial and
+  maintenance margin and week realized P&L. `margin_snapshots()` and
+  `auto_liqs()` read margin and the account's risk limits.
+
 ## 0.1.0 — unreleased
 
 First cut.
@@ -60,4 +115,3 @@ First cut.
 - The cached token is created with mode 0600 from its first byte, inside a
   directory created 0700 -- not chmod'ed after the fact.
 
-Not yet included: the websocket client, market data.

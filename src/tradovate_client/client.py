@@ -16,24 +16,31 @@ from .auth import (
     Credentials,
     TokenStore,
 )
-from .enums import Action, Env, OrderType, TimeInForce
+from .enums import Action, Env, OrderType
 from .errors import (
+    PENALTY_TICKET,
     AuthError,
     CaptchaRequired,
     ConfigError,
     NotFoundError,
+    OrderRejected,
     TimePenalty,
+    TradovateError,
     penalty_of,
     raise_for_result,
 )
 from .models import (
     Account,
+    AutoLiq,
     CashBalance,
     Contract,
+    ContractMaturity,
     Fill,
     FillFee,
     FillPair,
+    MarginSnapshot,
     Order,
+    OrderStrategy,
     Position,
     PositionView,
     Product,
@@ -232,13 +239,85 @@ class TradovateClient:
             )
         return self._tokens.write(reply)
 
+    def md_token(self) -> str:
+        """The token for the market data socket.
+
+        Tradovate's authentication reply carries ``mdAccessToken`` beside the
+        access token, and their own examples authorize the market data socket
+        with it. When one is held and has not expired it is returned;
+        otherwise the access token is, which is what their websocket tutorial
+        connects to market data with.
+        """
+        access = self.token()
+        held, expires = self._tokens.read_md()
+        if held and (expires - self._clock()) > 0:
+            return held
+        return access
+
     def _get(self, path, **params) -> Any:
-        return self._transport.request(
+        reply = self._transport.request(
             'GET', path, token=self.token(), params=params or None
         )
+        penalty = penalty_of(reply)
+        if penalty is not None:
+            # Tradovate documents sending the ticket back in the request
+            # body. A GET has none, so this does not guess at where the
+            # ticket would go: it reports the penalty and how long it is.
+            ticket, seconds, captcha = penalty
+            self._raise_penalty(path, reply, ticket, seconds, captcha, 0, 0.0)
+        return reply
 
     def _post(self, path, body) -> Any:
-        return self._transport.request('POST', path, token=self.token(), body=body)
+        """POST, sitting out a time penalty the way Tradovate documents.
+
+        Any endpoint can answer with ``p-ticket`` and ``p-time`` instead of
+        its usual reply once a request-rate threshold is crossed. That reply
+        means the request was declined, not processed, so it is safe to send
+        again: wait ``p-time`` seconds and repeat the same body with the
+        ticket added. Reference: ``tradovate/example-api-faq``,
+        ``docs/HowToHandleRequestLimits.md``.
+        """
+        waited = 0.0
+        sent = body
+        for attempt in range(1, MAX_PENALTY_RETRIES + 2):
+            reply = self._transport.request('POST', path, token=self.token(), body=sent)
+            penalty = penalty_of(reply)
+            if penalty is None:
+                return reply
+            ticket, seconds, captcha = penalty
+            if captcha or attempt > MAX_PENALTY_RETRIES or not isinstance(body, dict):
+                self._raise_penalty(
+                    path, reply, ticket, seconds, captcha, attempt - 1, waited
+                )
+            wait = min(max(0.0, seconds), MAX_PENALTY_WAIT_SECONDS)
+            waited += wait
+            self._sleep(wait)
+            sent = dict(body)
+            sent[PENALTY_TICKET] = ticket
+        raise TradovateError(  # pragma: no cover - loop always returns
+            'request did not resolve', endpoint=path
+        )
+
+    @staticmethod
+    def _raise_penalty(path, reply, ticket, seconds, captcha, attempts, waited) -> None:
+        if captcha:
+            raise CaptchaRequired(
+                'Tradovate is asking for a captcha on %s, which a third-party '
+                'application cannot answer. Do not retry: retrying extends '
+                'the penalty.' % path,
+                endpoint=path,
+                body=reply,
+            )
+        raise TimePenalty(
+            'Tradovate is throttling %s after %d retries and %gs of waiting; '
+            'it last asked for %gs. Wait rather than retrying.'
+            % (path, attempts, waited, seconds),
+            seconds=seconds,
+            ticket=ticket,
+            attempts=attempts,
+            endpoint=path,
+            body=reply,
+        )
 
     def _order_post(self, path, body) -> Any:
         """POST an order and check the result Tradovate puts in the payload.
@@ -334,6 +413,74 @@ class TradovateClient:
                 'no contract named %r' % name, endpoint='/contract/find'
             )
         return Contract.from_api(d)
+
+    def suggest_contracts(self, text, limit) -> list[Contract]:
+        """Contracts whose names match ``text``, at most ``limit`` of them.
+
+        Tradovate's ``/contract/suggest``. Both parameters are required by
+        the endpoint, so neither has a default here.
+        """
+        return [
+            Contract.from_api(d)
+            for d in (self._get('/contract/suggest', t=text, l=int(limit)) or [])
+            if isinstance(d, dict) and 'id' in d
+        ]
+
+    def roll_contract(self, name, *, forward=True, if_expired=None) -> Contract:
+        """The contract one expiry on from ``name`` -- or back, with ``forward=False``.
+
+        This asks Tradovate, through ``/contract/rollcontract``, rather than
+        working out month codes here. It names the next contract; it places
+        no order and moves no position.
+        """
+        reply = self._post(
+            '/contract/rollcontract',
+            {'name': name, 'forward': bool(forward), 'ifExpired': if_expired},
+        )
+        reply = reply if isinstance(reply, dict) else {}
+        if reply.get('errorText'):
+            raise NotFoundError(
+                'Tradovate could not roll %r: %s' % (name, reply['errorText']),
+                endpoint='/contract/rollcontract',
+                body=reply,
+            )
+        contract = reply.get('contract')
+        if not isinstance(contract, dict) or 'id' not in contract:
+            raise NotFoundError(
+                'Tradovate named no contract to roll %r into' % name,
+                endpoint='/contract/rollcontract',
+                body=reply,
+            )
+        return Contract.from_api(contract)
+
+    def contract_maturity(self, maturity_id) -> ContractMaturity:
+        """Expiry details for a contract, by its ``contract_maturity_id``."""
+        d = self._get('/contractMaturity/item', id=int(maturity_id))
+        if not isinstance(d, dict) or 'id' not in d:
+            raise NotFoundError(
+                'no contract maturity %s' % maturity_id,
+                endpoint='/contractMaturity/item',
+            )
+        return ContractMaturity.from_api(d)
+
+    def margin_snapshots(self) -> list[MarginSnapshot]:
+        """Every margin snapshot this login can see."""
+        return [
+            MarginSnapshot.from_api(d)
+            for d in (self._get('/marginSnapshot/list') or [])
+            if isinstance(d, dict)
+        ]
+
+    def auto_liqs(self) -> list[AutoLiq]:
+        """The risk limits Tradovate holds for this login's accounts.
+
+        Read-only here: this library does not set or change a risk limit.
+        """
+        return [
+            AutoLiq.from_api(d)
+            for d in (self._get('/userAccountAutoLiq/list') or [])
+            if isinstance(d, dict)
+        ]
 
     def fills(self) -> list[Fill]:
         return [
@@ -692,6 +839,100 @@ class TradovateClient:
             **kw,
         )
 
+    # ── order strategies ────────────────────────────────────────────────────
+
+    def start_order_strategy(
+        self,
+        action,
+        symbol,
+        *,
+        order_strategy_type_id,
+        params=None,
+        account=None,
+        uuid=None,
+        custom_tag_50=None,
+    ) -> OrderStrategy:
+        """Start a Tradovate order strategy.
+
+        ``params`` is the strategy's own configuration, as a mapping or a
+        JSON string. Raises ``OrderRejected`` when Tradovate answers with
+        ``errorText``.
+        """
+        acct = self.account(account)
+        body = _orders.build_order_strategy(
+            account_id=acct.id,
+            account_spec=acct.spec,
+            action=action,
+            symbol=symbol,
+            order_strategy_type_id=order_strategy_type_id,
+            params=params,
+            uuid=uuid,
+            custom_tag_50=custom_tag_50,
+        )
+        return self._strategy(
+            '/orderStrategy/startorderstrategy',
+            self._post('/orderStrategy/startorderstrategy', body),
+        )
+
+    def bracket_strategy(
+        self, action, symbol, qty, *, brackets, account=None, **entry
+    ) -> OrderStrategy:
+        """An entry with brackets that Tradovate manages as one strategy.
+
+        Unlike ``bracketed_market`` -- an OSO with fixed child prices -- a
+        bracket strategy takes its targets and stops relative to the entry,
+        can scale out across several brackets, and can trail::
+
+            client.bracket_strategy(
+                Action.BUY, 'ABCZ6', 2,
+                brackets=[
+                    {'qty': 1, 'profit_target': ..., 'stop_loss': ...},
+                    {'qty': 1, 'profit_target': ..., 'stop_loss': ...,
+                     'trailing_stop': True},
+                ],
+            )
+
+        Every number in ``brackets`` is yours. The strategy type id is the
+        one Tradovate's own examples use; see ``BRACKET_STRATEGY_TYPE_ID``.
+        """
+        return self.start_order_strategy(
+            action,
+            symbol,
+            order_strategy_type_id=_orders.BRACKET_STRATEGY_TYPE_ID,
+            params=_orders.build_bracket_params(qty=qty, brackets=brackets, **entry),
+            account=account,
+        )
+
+    def interrupt_order_strategy(self, order_strategy_id) -> OrderStrategy:
+        """Stop a running order strategy."""
+        return self._strategy(
+            '/orderStrategy/interruptorderstrategy',
+            self._post(
+                '/orderStrategy/interruptorderstrategy',
+                {'orderStrategyId': int(order_strategy_id)},
+            ),
+        )
+
+    def order_strategies(self) -> list[OrderStrategy]:
+        return [
+            OrderStrategy.from_api(d)
+            for d in (self._get('/orderStrategy/list') or [])
+            if isinstance(d, dict)
+        ]
+
+    @staticmethod
+    def _strategy(path, reply) -> OrderStrategy:
+        reply = reply if isinstance(reply, dict) else {}
+        if reply.get('errorText'):
+            raise OrderRejected(
+                'Tradovate refused the order strategy: %s' % reply['errorText'],
+                reason=reply['errorText'],
+                text=reply['errorText'],
+                endpoint=path,
+                body=reply,
+            )
+        return OrderStrategy.from_api(reply.get('orderStrategy') or {})
+
     # ── changing and cancelling ─────────────────────────────────────────────
 
     def modify(
@@ -712,40 +953,29 @@ class TradovateClient:
         custom_tag_50=None,
         is_automated=True,
     ) -> Any:
-        # Tradovate's modifyorder replaces the order rather than patching it:
-        # orderQty is required on every call, and orderType with it. A caller
-        # who only means to move a price still has to resend the size, so
-        # anything not passed is read back off the order's current version.
-        # Without this the endpoint answers 400 'missing required field
-        # "orderQty"' and the order is left exactly as it was.
+        # Tradovate's modifyorder replaces the order rather than patching it,
+        # so the size and type go back with every call. Anything not passed
+        # is read off the order's current version; see ``build_modify``.
+        current = None
         if qty is None or order_type is None:
             current = self._current_order_version(order_id)
-            if qty is None:
-                qty = current.get('orderQty')
-            if order_type is None:
-                order_type = current.get('orderType')
-            if price is None:
-                price = current.get('price')
-            if stop_price is None:
-                stop_price = current.get('stopPrice')
-            if time_in_force is None:
-                time_in_force = current.get('timeInForce')
-        body = {
-            'orderId': int(order_id),
-            'clOrdId': client_order_id,
-            'orderQty': int(qty) if qty is not None else None,
-            'orderType': OrderType(order_type).value if order_type else None,
-            'price': price,
-            'stopPrice': stop_price,
-            'maxShow': max_show,
-            'pegDifference': peg_difference,
-            'timeInForce': TimeInForce(time_in_force).value if time_in_force else None,
-            'expireTime': expire_time,
-            'text': text,
-            'activationTime': activation_time,
-            'customTag50': custom_tag_50,
-            'isAutomated': bool(is_automated),
-        }
+        body = _orders.build_modify(
+            order_id,
+            current=current,
+            qty=qty,
+            order_type=order_type,
+            price=price,
+            stop_price=stop_price,
+            time_in_force=time_in_force,
+            expire_time=expire_time,
+            max_show=max_show,
+            peg_difference=peg_difference,
+            text=text,
+            activation_time=activation_time,
+            client_order_id=client_order_id,
+            custom_tag_50=custom_tag_50,
+            is_automated=is_automated,
+        )
         return self._order_post('/order/modifyorder', body)
 
     def _current_order_version(self, order_id) -> dict:

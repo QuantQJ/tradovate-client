@@ -13,6 +13,17 @@ client.limit(Action.BUY, "ABCZ6", 1, price=20150.25)
 
 No dependencies. The REST client is standard library only.
 
+What is in it:
+
+- **REST** — accounts, balances and margin, positions, orders, fills, fees and
+  round trips, contracts and rolls, every order type, OSO/OCO brackets and
+  order strategies.
+- **The user socket** — one connection for orders and a streamed account:
+  positions, orders, fills and cash without polling. It reconnects and
+  re-syncs on its own.
+- **Market data** — quotes, depth of market, volume histograms, bars and
+  ticks, live and historical.
+
 ## Why this one
 
 There are a few Tradovate wrappers on PyPI and GitHub. Three things here are
@@ -61,6 +72,20 @@ a caller might mistake for a result. That mistake places orders.
 credentials are: no path, no file. It does read and write its own token cache
 in a default directory (`$XDG_STATE_HOME/tradovate-client`, overridable with
 `token_dir=`), which holds a short-lived access token and no credentials.
+
+**A dropped socket comes back, and nothing is sent twice.** Both sockets
+reopen, authorize with a fresh token and restore themselves: the user socket
+takes a new snapshot, the market data socket sends its subscriptions again. A
+fill that happened while the connection was down is delivered as a `fill`
+event when it returns. The one thing never repeated is a request that was in
+flight when the socket died — its caller gets `ambiguous=True` instead,
+because an order sent twice is two orders.
+
+**A time penalty is handled on every endpoint, not only on login.** Tradovate
+can answer any request with `p-ticket` and `p-time` in place of its usual
+reply. That reply means the request was declined, so this waits the time given
+and sends the same request once more with the ticket attached, which is what
+Tradovate's own FAQ does. A `p-captcha` is never retried.
 
 ## Install
 
@@ -136,12 +161,16 @@ the same for a given machine.
 client = TradovateClient(Env.DEMO, account="DEMO1234")
 
 client.accounts()  # [Account(...), ...]
-client.cash_balance()  # CashBalance(total_cash=..., open_pnl=...)
+client.cash_balance()  # CashBalance(total_cash=..., open_pnl=..., net_liq=...)
+client.margin_snapshots()  # initial, maintenance and used margin
+client.auto_liqs()  # the risk limits Tradovate holds for the account
 client.positions()  # this account's positions only
 client.orders()  # every order
 client.working_orders()  # just the live ones
 client.fills_for_order(order_id)  # what it actually traded at
 client.find_contract("ABCZ6")  # Contract(id=..., name="ABCZ6")
+client.suggest_contracts("ABC", 5)  # up to five contracts matching the text
+client.roll_contract("ABCZ6")  # the next expiry, as Tradovate names it
 
 snap = client.snapshot()  # one object for a dashboard poller
 snap.cash.open_pnl
@@ -154,6 +183,12 @@ does not pull the full contract list on every poll.
 
 If the login has more than one account and you did not say which, the client
 raises instead of taking the first one.
+
+`cash_balance()` reads margin and net liquidation value as well as cash. A
+figure Tradovate did not send is `None`, not zero.
+
+`roll_contract` asks Tradovate which contract follows; it works out no month
+codes itself, places no order and moves no position.
 
 ## Orders
 
@@ -223,6 +258,39 @@ client.place_oco(
     other=stop,
 )
 ```
+
+### Order strategies
+
+An OSO bracket has fixed child prices. A bracket *strategy* is managed by
+Tradovate as one unit: its targets and stops are set relative to the entry, it
+can scale out over several brackets, and it can trail.
+
+```python
+strategy = client.bracket_strategy(
+    Action.BUY,
+    "ABCZ6",
+    2,
+    brackets=[
+        {"qty": 1, "profit_target": target_1, "stop_loss": stop_1},
+        {
+            "qty": 1,
+            "profit_target": target_2,
+            "stop_loss": stop_2,
+            "trailing_stop": True,
+        },
+    ],
+)
+
+strategy.status  # 'ActiveStrategy'
+client.interrupt_order_strategy(strategy.id)
+client.order_strategies()
+```
+
+Every number in `brackets` is yours; there is no default bracket. The request
+is the one in Tradovate's own example (`orderStrategyTypeId` 2, with `params`
+sent as a JSON string). A key this library has not named is passed through
+untouched, so a bracket field Tradovate documents can still be sent. For any
+other strategy type there is `start_order_strategy`.
 
 ## What a trade cost, and what it made
 
@@ -296,29 +364,173 @@ Three things it buys:
 
 Full authentication stays on REST, so the socket inherits the renewal
 behaviour rather than reimplementing it. Order bodies are built by the same
-function the REST client uses and unset fields are stripped the same way, so
-a socket order and a REST order are byte-for-byte identical.
+functions the REST client uses and unset fields are stripped the same way, so
+a socket order and a REST order are byte-for-byte identical — and a refusal
+raises `OrderRejected` on the socket exactly as it does on REST.
 
 ```python
 stream.limit("Buy", "ABCZ6", 1, 20150.25)
 stream.stop("Sell", "ABCZ6", 1, 20100.00)
 stream.stop_limit("Sell", "ABCZ6", 1, 20095.00, 20100.00)
+stream.bracketed_market("Buy", "ABCZ6", 1, take_profit=20200.0, stop_loss=20050.0)
+stream.bracket_strategy("Buy", "ABCZ6", 1, brackets=[...])
+stream.modify(order_id, price=20160.00)
 stream.cancel(order_id)
+stream.cancel_working()
 stream.liquidate(contract_id)
 
-stream.last_fill()  # Fill, with the price Tradovate reported
-stream.position(11)  # from the streamed state
 stream.request("contract/find", "name=ABCZ6")  # anything else
 ```
 
-Events you can subscribe to: `fill`, `position`, `order`, `cash`, `props`. A
-handler that raises does not take the receive loop down with it.
+### The streamed account
+
+```python
+stream.positions()  # {'ABCZ6': 2}
+stream.working_orders()  # [Order(...), ...]
+stream.order(order_id)  # status, size, type and prices on one object
+stream.fills_for_order(order_id)
+stream.last_fill()  # Fill, with the price Tradovate reported
+
+reply = stream.limit("Buy", "ABCZ6", 1, 20150.25)
+done = stream.wait_for_order(reply["orderId"], timeout=30)
+done.status  # 'Filled', 'Canceled', 'Rejected', 'Expired' or 'Completed'
+```
+
+None of those reads makes a request. `wait_for_order` blocks on the stream
+until the order reaches a final status, and raises `TimeoutError` if it is
+still live — which says only that it has not finished.
+
+The snapshot covers every account on the login; the socket keeps the one it
+is bound to and leaves the others out.
+
+Events you can subscribe to: `fill`, `position`, `order`, `cash`, `props`,
+and on every socket `disconnect`, `reconnect` and `error`.
+
+### Handlers can send requests
+
+Handlers run on their own thread, not the one reading the socket. So a
+handler can act on what it was told:
+
+```python
+def on_fill(fill):
+    stream.limit("Sell", "ABCZ6", fill["qty"], your_exit_price(fill))
+
+
+stream.on("fill", on_fill)
+```
+
+A handler that raises does not take the stream down, and a slow one does not
+hold up the heartbeat or anyone else's request.
+
+### When the connection drops
+
+```python
+stream.on("disconnect", lambda info: ...)  # info['reconnecting']
+stream.on("reconnect", lambda info: ...)  # info['attempts']
+stream.on("error", lambda exc: ...)  # an attempt failed, or it gave up
+```
+
+The socket reopens and takes a new snapshot, which replaces the old state
+rather than being merged into it: a position closed while the connection was
+down is gone afterwards, and a fill that happened in the gap is delivered as
+a `fill` event.
+
+Reconnection stops, and says so through `error`, when a retry cannot help — a
+captcha, or credentials that are no longer there. Retrying past a captcha
+only extends the penalty.
+
+```python
+TradovateSocket(
+    Env.DEMO,
+    client=rest,
+    reconnect=True,  # the default
+    reconnect_delays=(1, 2, 5, 10, 30),  # seconds; the last one repeats
+    max_reconnects=None,  # None keeps trying
+)
+```
+
+The delays are this library's default, not Tradovate's. Set your own.
 
 The detail that matters: Tradovate drops a connection idle for 2.5 seconds, so
 the client sends a keep-alive every 2. That is the part other Tradovate
 libraries miss.
 
 Needs `websocket-client`: `pip install "tradovate-client[socket] @ git+https://github.com/QuantQJ/tradovate-client.git"`.
+
+## Market data
+
+Tradovate serves market data from a socket of its own. Same protocol, same
+reconnection, and subscriptions that survive it.
+
+```python
+from tradovate_client import MarketDataSocket, TradovateClient, Env
+
+rest = TradovateClient(Env.DEMO, credential_path="/secure/key.json")
+
+with MarketDataSocket(Env.DEMO, client=rest) as md:
+    md.subscribe_quote("ABCZ6", lambda q: print(q.bid, q.ask, q.last))
+    md.subscribe_dom("ABCZ6", lambda book: print(book.bids[0], book.offers[0]))
+    md.subscribe_histogram("ABCZ6", lambda h: print(h.base, h.items))
+
+    md.quote("ABCZ6")  # the latest one received, no request
+```
+
+A `Quote` has `bid`, `ask`, `last`, their sizes, `volume`, `high`, `low`,
+`open`, `settlement` and `open_interest`. Tradovate may leave any of them out
+of an update, and one it left out is `None` — never a zero that could be
+mistaken for a price.
+
+Each `subscribe_*` returns a handle; `handle.cancel()` ends it. Two handlers
+on one contract share one subscription, and the stream stops with the last.
+
+### Bars and ticks
+
+```python
+bars = md.bars("ABCZ6", count=100)  # oldest first
+bars[-1].close, bars[-1].volume, bars[-1].time
+
+ticks = md.ticks("ABCZ6", count=500)
+ticks[-1].price, ticks[-1].size, ticks[-1].bid, ticks[-1].ask
+```
+
+Both are one blocking call: subscribe, collect up to Tradovate's
+end-of-history marker, cancel, return. Tick packets arrive packed — a base
+price and time, with each tick an offset counted in tick sizes — and are
+decoded the way Tradovate documents.
+
+Tradovate caps how much one chart request returns and says the cap varies on
+purpose. `history` pages through it, following the procedure in their FAQ:
+
+```python
+bars = md.history("ABCZ6", since="2026-01-01T00:00:00Z")
+```
+
+For a chart that stays live:
+
+```python
+chart = md.chart(
+    "ABCZ6",
+    as_much_as_elements=100,
+    on_bar=lambda bar: ...,  # history, then every update
+    on_eoh=lambda chart: ...,  # history is loaded; what follows is real time
+)
+
+chart.bars()  # everything held, oldest first
+chart.cancel()
+```
+
+Bars are held by timestamp, so the bar still forming is replaced as it updates
+rather than repeated. The bar type, size and unit are `underlying_type=`,
+`element_size=` and `element_size_unit=`, with Tradovate's own values in
+`ChartType` and `ElementSizeUnit`. You must say how much to load — one of
+`as_much_as_elements=`, `closest_timestamp=`, `as_far_as_timestamp=` or
+`closest_tick_id=` — and none is assumed.
+
+The socket authorizes with the market data token Tradovate issues beside the
+access token, and falls back to the access token when there is none.
+
+What you receive depends on the market data your Tradovate login is entitled
+to. A subscription Tradovate refuses raises.
 
 ## Errors
 
@@ -332,6 +544,9 @@ from tradovate_client import (
     TransportError,
     ConfigError,
     NotFoundError,
+    OrderRejected,
+    TimePenalty,
+    CaptchaRequired,
 )
 
 try:
@@ -343,6 +558,21 @@ except RequestError as exc:
 ```
 
 Every exception carries the endpoint, the status and the response body.
+
+### Time penalties
+
+Past a request-rate threshold Tradovate answers with `p-ticket` and `p-time`
+instead of the usual reply — on any endpoint, with HTTP 200. Over REST a
+`POST` is waited out and sent again with the ticket; over either socket any
+request is. You see an exception only when that does not resolve it:
+
+- `TimePenalty` — still throttled after the retry budget. `exc.seconds` is how
+  long Tradovate last asked for.
+- `CaptchaRequired` — Tradovate wants a human. Never retried.
+
+A penalised `GET` raises `TimePenalty` straight away rather than being
+retried: Tradovate documents the ticket going back in the request body, and a
+`GET` has none.
 
 ### Retries never duplicate an order
 
@@ -405,6 +635,18 @@ Tradovate's own published material, not inferred:
   `tradovate/example-api-csharp-trading`, `services-api/docs/`
   (`PlaceOSO.md`, `PlaceOCO.md`, `ModifyOrder.md`, `CancelOrder.md`,
   `LiquidatePosition.md`, `RestrainedOrderVersion.md`)
+- `ChartType`, `ElementSizeUnit`, the market data endpoints and every
+  message shape, including the tick packet —
+  `tradovate/example-api-js`, `tutorial/WebSockets` (EX-08 to EX-11)
+- the market data token (`mdAccessToken`) —
+  `tradovate/example-api-trading-strategy`, `endpoints/requestAccessToken.js`
+- the bracket strategy request —
+  `tradovate/example-api-faq`, `example-code/start-an-order-strategy`
+- time penalties on any endpoint, and paging a large chart request —
+  `tradovate/example-api-faq`, `docs/HowToHandleRequestLimits.md` and
+  `docs/HowToHandleDataSizeLimits.md`
+- the balance, margin, risk-limit, contract-maturity and order-strategy
+  fields — the same `services-api/docs/` model pages
 
 `tests/test_enums.py` asserts those exact sets, so **a local edit** that
 drifts from Tradovate's published values fails the build. It does not fetch
@@ -423,8 +665,9 @@ broker account.
 
 ## Not here yet
 
-- Market data.
-- An async client. This one is synchronous.
+- An async client. This one is synchronous and threaded.
+- Market replay.
+- Changing risk limits. They can be read, not set.
 
 ## Disclaimer
 

@@ -36,7 +36,7 @@ from .errors import ThrottledError, TransportError, raise_for_status
 
 DEFAULT_TIMEOUT = 20.0
 DEFAULT_RETRIES = 2
-USER_AGENT = 'tradovate-client/0.1.0 (+https://github.com/QuantQJ/tradovate-client)'
+USER_AGENT = 'tradovate-client/0.2.0 (+https://github.com/QuantQJ/tradovate-client)'
 
 #: Methods with no side effect, safe to repeat.
 IDEMPOTENT_METHODS = frozenset({'GET', 'HEAD'})

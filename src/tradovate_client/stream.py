@@ -34,40 +34,39 @@ A response comes back inside an ``a`` frame as
 
 The client must send ``[]`` at least every 2.5 seconds or the server drops the
 connection. That is the detail every other Tradovate library misses.
+
+When the connection does drop it is reopened and re-synced, and a fill that
+happened while it was down is delivered as a ``fill`` event once the new
+snapshot arrives. A request that was in flight is never repeated.
 """
 
 from __future__ import annotations
 
-import json
 import threading
-import time
 from typing import Any
 
 from . import orders as _orders
-from ._http import _drop_none
-from .enums import Env, OrderType
-from .errors import ConfigError, TradovateError, TransportError
-from .models import Fill
+from ._wire import HEARTBEAT_SECONDS, RECONNECT_DELAYS, Wire
+from .enums import Action, Env, OrderType
+from .errors import ConfigError, OrderRejected, raise_for_result
+from .models import Fill, Order
 
-__all__ = ['TradovateSocket', 'SOCKET_URLS', 'HEARTBEAT_SECONDS']
+__all__ = ['TradovateSocket', 'SOCKET_URLS', 'HEARTBEAT_SECONDS', 'TERMINAL_STATUSES']
 
 SOCKET_URLS = {
     Env.DEMO: 'wss://demo.tradovateapi.com/v1/websocket',
     Env.LIVE: 'wss://live.tradovateapi.com/v1/websocket',
 }
 
-#: Tradovate drops a connection that has not sent anything for 2.5 seconds, so
-#: the keep-alive goes out comfortably inside that.
-HEARTBEAT_SECONDS = 2.0
-
-#: Frame types, as the protocol defines them.
-FRAME_OPEN = 'o'
-FRAME_HEARTBEAT = 'h'
-FRAME_MESSAGES = 'a'
-FRAME_CLOSE = 'c'
+#: Order statuses after which an order does nothing further. The names are
+#: from Tradovate's ``Order`` model (``ordStatus``); which of them are final
+#: is this library's reading of their plain meaning.
+TERMINAL_STATUSES = frozenset(
+    {'Filled', 'Canceled', 'Rejected', 'Expired', 'Completed'}
+)
 
 
-class TradovateSocket:
+class TradovateSocket(Wire):
     """One open socket to Tradovate.
 
         from tradovate_client import TradovateClient, TradovateSocket, Env
@@ -93,291 +92,59 @@ class TradovateSocket:
         request_timeout=8.0,
         heartbeat_interval=HEARTBEAT_SECONDS,
         ws=None,
+        ws_factory=None,
         account=None,
+        reconnect=True,
+        reconnect_delays=RECONNECT_DELAYS,
+        max_reconnects=None,
+        **kw,
     ) -> None:
-        self.env = Env(env)
-        self.connect_timeout = connect_timeout
-        self.request_timeout = request_timeout
-        self.heartbeat_interval = heartbeat_interval
+        super().__init__(
+            env,
+            client=client,
+            credentials=credentials,
+            credential_path=credential_path,
+            token_dir=token_dir,
+            connect_timeout=connect_timeout,
+            request_timeout=request_timeout,
+            heartbeat_interval=heartbeat_interval,
+            ws=ws,
+            ws_factory=ws_factory,
+            reconnect=reconnect,
+            reconnect_delays=reconnect_delays,
+            max_reconnects=max_reconnects,
+            **kw,
+        )
         self.account = account
-        self._rest = client
-        self._rest_kw = {
-            'credentials': credentials,
-            'credential_path': credential_path,
-            'token_dir': token_dir,
-        }
-        self._ws = ws
-        self._next = 0
-        self._lock = threading.Lock()
-        self._pending: dict[Any, dict] = {}
-        self._opened = threading.Event()
-        self._authorized = threading.Event()
-        self._authorize_id: int | None = None
-        self._stop = False
-        self._threads: list[threading.Thread] = []
-        self._handlers: dict[str, list] = {}
         self._last_fill: dict | None = None
-        self.state: dict[str, Any] = {
+        self._order_changed = threading.Condition()
+        self.state: dict[str, Any] = self._empty_state()
+
+    @staticmethod
+    def _empty_state() -> dict[str, Any]:
+        return {
             'account_id': None,
             'account_spec': None,
             'user_id': None,
             'positions': {},
+            'position_details': {},
             'contracts': {},
             'fills': [],
             'cash': {},
+            'orders': {},
+            'order_versions': {},
         }
 
-    # ── the REST client, for the token ──────────────────────────────────────
-
     @property
-    def rest(self) -> Any:
-        """The REST client whose token this socket reuses.
+    def _url(self) -> str:
+        return SOCKET_URLS[self.env]
 
-        Full authentication is a REST call, and the renewal logic lives there,
-        so the socket borrows it rather than reimplementing it.
-        """
-        if self._rest is None:
-            from .client import TradovateClient
-
-            kw = {k: v for k, v in self._rest_kw.items() if v is not None}
-            self._rest = TradovateClient(self.env, **kw)
-        return self._rest
-
-    # ── lifecycle ───────────────────────────────────────────────────────────
-
-    @property
-    def is_connected(self) -> bool:
-        return bool(self._ws) and self._opened.is_set() and not self._stop
-
-    @property
-    def is_authorized(self) -> bool:
-        return self._authorized.is_set()
-
-    def connect(self) -> TradovateSocket:
-        """Open, authorize, and take a first snapshot."""
-        token = self.rest.token()
-        if self._ws is None:
-            try:
-                import websocket
-            except ImportError as exc:
-                raise ConfigError(
-                    'websocket-client is not installed; '
-                    'pip install "tradovate-client[socket]"'
-                ) from exc
-            try:
-                self._ws = websocket.create_connection(
-                    SOCKET_URLS[self.env], timeout=self.connect_timeout
-                )
-            except Exception as exc:
-                raise TransportError(
-                    'could not open a socket to %s: %s' % (SOCKET_URLS[self.env], exc)
-                ) from exc
-        self._stop = False
-        self._spawn(self._receive_loop, 'tradovate-recv')
-        self._spawn(self._heartbeat_loop, 'tradovate-heartbeat')
-        if not self._opened.wait(self.connect_timeout):
-            self.close()
-            raise TransportError(
-                'no open frame from Tradovate within %ss' % self.connect_timeout,
-                endpoint='websocket',
-            )
-        self._authorize(token)
-        self.sync()
-        return self
-
-    def _spawn(self, target, name) -> None:
-        thread = threading.Thread(target=target, name=name, daemon=True)
-        self._threads.append(thread)
-        thread.start()
-
-    def _authorize(self, token) -> None:
-        with self._lock:
-            self._next += 1
-            request_id = self._next
-            self._authorize_id = request_id
-        self._send_raw('authorize\n%d\n\n%s' % (request_id, token))
-        if not self._authorized.wait(self.connect_timeout):
-            self.close()
-            raise TransportError(
-                'Tradovate did not accept the socket authorization within %ss'
-                % self.connect_timeout,
-                endpoint='authorize',
-            )
-
-    def close(self) -> None:
-        self._stop = True
-        self._opened.clear()
-        self._authorized.clear()
-        if self._ws is not None:
-            try:
-                self._ws.close()
-            except Exception:
-                pass
-        with self._lock:
-            waiting = list(self._pending.values())
-            self._pending.clear()
-        for entry in waiting:
-            entry['closed'] = True
-            entry['event'].set()
-
-    def __enter__(self) -> TradovateSocket:
-        return self.connect()
-
-    def __exit__(self, *exc) -> None:
-        self.close()
-
-    # ── frames ──────────────────────────────────────────────────────────────
-
-    def _send_raw(self, payload) -> None:
-        if self._ws is None:
-            raise TransportError('socket is not open', endpoint='websocket')
-        try:
-            self._ws.send(payload)
-        except Exception as exc:
-            raise TransportError(
-                'socket send failed: %s' % exc, endpoint='websocket'
-            ) from exc
-
-    def _heartbeat_loop(self) -> None:
-        while not self._stop:
-            try:
-                if self._ws is not None:
-                    self._ws.send('[]')
-            except Exception:
-                self._opened.clear()
-                break
-            time.sleep(self.heartbeat_interval)
-
-    def _receive_loop(self) -> None:
-        while not self._stop:
-            try:
-                raw = self._ws.recv()
-            except Exception:
-                self._opened.clear()
-                break
-            if not raw:
-                continue
-            kind, body = raw[0], raw[1:]
-            if kind == FRAME_OPEN:
-                self._opened.set()
-            elif kind == FRAME_HEARTBEAT:
-                try:
-                    self._ws.send('[]')
-                except Exception:
-                    self._opened.clear()
-                    break
-            elif kind == FRAME_MESSAGES:
-                try:
-                    messages = json.loads(body)
-                except ValueError:
-                    messages = []
-                for message in messages:
-                    self._dispatch(message)
-            elif kind == FRAME_CLOSE:
-                self._opened.clear()
-                break
-        self._fail_waiters()
-
-    def _fail_waiters(self) -> None:
-        """Wake anything still waiting, so a dead socket is not a hang."""
-        with self._lock:
-            waiting = list(self._pending.values())
-            self._pending.clear()
-        for entry in waiting:
-            entry['closed'] = True
-            entry['event'].set()
-
-    def _dispatch(self, message) -> None:
-        if not isinstance(message, dict):
-            return
-        if 'i' in message:
-            request_id = message.get('i')
-            if request_id == self._authorize_id:
-                if message.get('s') == 200:
-                    self._authorized.set()
-                else:
-                    self._authorized.clear()
-                return
-            with self._lock:
-                entry = self._pending.get(request_id)
-            if entry is not None:
-                entry['status'] = message.get('s')
-                entry['data'] = message.get('d')
-                entry['event'].set()
-            return
-        if message.get('e') == 'props':
-            self._apply(message.get('d') or {})
-            self._emit('props', message.get('d') or {})
-
-    # ── requests ────────────────────────────────────────────────────────────
-
-    def request(self, endpoint, query='', body=None, *, timeout=None) -> Any:
-        """Send one request over the socket and wait for its answer.
-
-        Raises on timeout or a non-2xx status. A request whose socket dies
-        while it is in flight raises ``TransportError`` with
-        ``ambiguous=True``: the server may have acted on it, so for an order
-        the state has to be read rather than assumed.
-        """
-        if not self.is_connected:
-            raise TransportError('socket is not open', endpoint=endpoint)
-        timeout = self.request_timeout if timeout is None else timeout
-        event = threading.Event()
-        with self._lock:
-            self._next += 1
-            request_id = self._next
-            entry: dict[str, Any] = {
-                'event': event,
-                'data': None,
-                'status': None,
-                'closed': False,
-            }
-            self._pending[request_id] = entry
-        payload = '%s\n%d\n%s\n%s' % (
-            endpoint,
-            request_id,
-            query or '',
-            '' if body is None else json.dumps(_drop_none(body)),
-        )
-        try:
-            self._send_raw(payload)
-        except TransportError:
-            with self._lock:
-                self._pending.pop(request_id, None)
-            raise
-        if not event.wait(timeout):
-            with self._lock:
-                self._pending.pop(request_id, None)
-            raise TransportError(
-                'no reply to %s within %ss -- the request may or may not have '
-                'been acted on. Read the state before sending anything else.'
-                % (endpoint, timeout),
-                endpoint=endpoint,
-                ambiguous=True,
-            )
-        with self._lock:
-            self._pending.pop(request_id, None)
-        if entry['closed']:
-            raise TransportError(
-                'the socket closed while %s was in flight -- it may or may not '
-                'have been acted on. Read the state before sending anything '
-                'else.' % endpoint,
-                endpoint=endpoint,
-                ambiguous=True,
-            )
-        status = entry['status']
-        if status is not None and not 200 <= int(status) < 300:
-            raise TradovateError(
-                'Tradovate refused %s' % endpoint,
-                endpoint=endpoint,
-                status=status,
-                body=entry['data'],
-            )
-        return entry['data']
+    def _after_authorize(self, resumed) -> None:
+        self.sync(_resumed=resumed)
 
     # ── streamed state ──────────────────────────────────────────────────────
 
-    def sync(self) -> dict:
+    def sync(self, *, _resumed=False) -> dict:
         """Take a full snapshot, then let the server stream the changes.
 
         One ``user/syncrequest`` replaces polling entirely.
@@ -420,24 +187,74 @@ class TradovateSocket:
                 'user/syncrequest', body={'users': [self.state['user_id']]}
             )
             if isinstance(snapshot, dict):
-                self._load_snapshot(snapshot)
+                self._load_snapshot(snapshot, resumed=_resumed)
         return dict(self.state)
 
-    def _load_snapshot(self, snapshot) -> None:
+    def _mine(self, entity) -> bool:
+        """Whether an entity belongs to the account this socket is bound to.
+
+        The snapshot covers every account on the login. An entity that names
+        an account other than this one is not this socket's business; one that
+        names no account is kept.
+        """
+        owner = entity.get('accountId')
+        mine = self.state['account_id']
+        return owner is None or mine is None or owner == mine
+
+    def _load_snapshot(self, snapshot, *, resumed=False) -> None:
+        known_fills = {
+            f.get('id') for f in self.state['fills'] if f.get('id') is not None
+        }
+        # A snapshot is the whole truth as of now, so it replaces what was
+        # held rather than being merged into it: a position closed while the
+        # socket was down must not survive the reconnect.
+        fresh = self._empty_state()
+        for key in ('account_id', 'account_spec', 'user_id'):
+            fresh[key] = self.state[key]
         for contract in snapshot.get('contracts') or []:
             if isinstance(contract, dict) and contract.get('id') is not None:
-                self.state['contracts'][contract['id']] = contract.get('name')
+                fresh['contracts'][contract['id']] = contract.get('name')
         for position in snapshot.get('positions') or []:
-            if isinstance(position, dict) and position.get('contractId') is not None:
-                self.state['positions'][position['contractId']] = position.get(
-                    'netPos', 0
-                )
+            if (
+                isinstance(position, dict)
+                and position.get('contractId') is not None
+                and self._mine(position)
+            ):
+                fresh['positions'][position['contractId']] = position.get('netPos', 0)
+                fresh['position_details'][position['contractId']] = position
         for balance in snapshot.get('cashBalances') or []:
-            if isinstance(balance, dict):
-                self.state['cash'] = balance
+            if isinstance(balance, dict) and self._mine(balance):
+                fresh['cash'] = balance
+        for order in snapshot.get('orders') or []:
+            if (
+                isinstance(order, dict)
+                and order.get('id') is not None
+                and self._mine(order)
+            ):
+                fresh['orders'][order['id']] = order
+        for version in snapshot.get('orderVersions') or []:
+            if isinstance(version, dict) and version.get('orderId') is not None:
+                fresh['order_versions'][version['orderId']] = version
+        missed = []
         for fill in snapshot.get('fills') or []:
             if isinstance(fill, dict):
-                self.state['fills'].append(fill)
+                fresh['fills'].append(fill)
+                if resumed and fill.get('id') not in known_fills:
+                    missed.append(fill)
+        self.state = fresh
+        with self._order_changed:
+            self._order_changed.notify_all()
+        # A fill that happened while the socket was down is in the new
+        # snapshot but was never streamed. Deliver it now, so a handler that
+        # acts on fills does not silently miss one.
+        for fill in missed:
+            self._last_fill = fill
+            self._emit('fill', fill)
+
+    def _on_event(self, message) -> None:
+        if message.get('e') == 'props':
+            self._apply(message.get('d') or {})
+            self._emit('props', message.get('d') or {})
 
     def _apply(self, event) -> None:
         """Fold one streamed change into the live state."""
@@ -445,35 +262,44 @@ class TradovateSocket:
         data = event.get('entity')
         if not isinstance(data, dict):
             data = event
-        if kind == 'position' or 'netPos' in data:
+        if kind == 'contract':
+            if data.get('id') is not None:
+                self.state['contracts'][data['id']] = data.get('name')
+            return
+        if kind == 'order':
+            if data.get('id') is not None and self._mine(data):
+                self.state['orders'][data['id']] = data
+                with self._order_changed:
+                    self._order_changed.notify_all()
+            self._emit('order', data)
+            return
+        if kind == 'orderVersion':
+            if data.get('orderId') is not None:
+                self.state['order_versions'][data['orderId']] = data
+            return
+        if kind == 'cashBalance':
+            if self._mine(data):
+                self.state['cash'] = data
+                self._emit('cash', data)
+            return
+        if kind == 'position' or (kind is None and 'netPos' in data):
             contract_id = data.get('contractId')
-            if contract_id is not None:
+            if contract_id is not None and self._mine(data):
                 self.state['positions'][contract_id] = data.get('netPos', 0)
+                self.state['position_details'][contract_id] = data
                 self._emit('position', data)
-        if kind == 'fill' or ('price' in data and 'qty' in data):
+            return
+        if kind == 'fill' or (kind is None and 'price' in data and 'qty' in data):
+            fill_id = data.get('id')
+            if fill_id is not None:
+                for index, held in enumerate(self.state['fills']):
+                    if held.get('id') == fill_id:
+                        # The same fill again -- an update, not a new trade.
+                        self.state['fills'][index] = data
+                        return
             self.state['fills'].append(data)
             self._last_fill = data
             self._emit('fill', data)
-        if kind == 'cashBalance':
-            self.state['cash'] = data
-            self._emit('cash', data)
-        if kind == 'order':
-            self._emit('order', data)
-
-    def on(self, event_name, handler) -> TradovateSocket:
-        """Subscribe to ``fill``, ``position``, ``order``, ``cash`` or ``props``.
-
-        A handler that raises does not take the receive loop down with it.
-        """
-        self._handlers.setdefault(str(event_name), []).append(handler)
-        return self
-
-    def _emit(self, event_name, payload) -> None:
-        for handler in self._handlers.get(event_name, ()):
-            try:
-                handler(payload)
-            except Exception:
-                pass
 
     # ── reads off the streamed state, no network ────────────────────────────
 
@@ -499,7 +325,83 @@ class TradovateSocket:
     def fills(self) -> list[Fill]:
         return [Fill.from_api(f) for f in self.state['fills']]
 
+    def fills_for_order(self, order_id) -> list[Fill]:
+        """The streamed fills belonging to one order."""
+        return [
+            Fill.from_api(f)
+            for f in self.state['fills']
+            if f.get('orderId') == int(order_id)
+        ]
+
+    def order(self, order_id) -> Order | None:
+        """One order from the streamed state, or None if it is not held.
+
+        The order and its latest version arrive as separate entities; they are
+        joined here so the size, type and prices are on the same object as the
+        status.
+        """
+        held = self.state['orders'].get(int(order_id))
+        if held is None:
+            return None
+        version = self.state['order_versions'].get(int(order_id)) or {}
+        merged = {k: v for k, v in version.items() if k != 'id'}
+        merged.update(held)
+        return Order.from_api(merged)
+
+    def orders(self) -> list[Order]:
+        found = (self.order(order_id) for order_id in list(self.state['orders']))
+        return [o for o in found if o is not None]
+
+    def working_orders(self) -> list[Order]:
+        return [o for o in self.orders() if o.is_working]
+
+    def wait_for_order(self, order_id, *, timeout=None) -> Order:
+        """Block until an order reaches a final status, and return it.
+
+        Final means one of ``TERMINAL_STATUSES``. The answer comes from the
+        stream, so nothing is polled. Raises ``TimeoutError`` if the order is
+        still live when ``timeout`` seconds have passed -- which says nothing
+        about the order except that it has not finished.
+        """
+        order_id = int(order_id)
+
+        def done():
+            held = self.state['orders'].get(order_id)
+            return held is not None and held.get('ordStatus') in TERMINAL_STATUSES
+
+        with self._order_changed:
+            if not self._order_changed.wait_for(done, timeout):
+                raise TimeoutError(
+                    'order %d has not reached a final status within %ss'
+                    % (order_id, timeout)
+                )
+        found = self.order(order_id)
+        assert found is not None
+        return found
+
     # ── writes, over the socket that is already open ────────────────────────
+
+    def _order_body(self, *, action, symbol, qty, order_type, **kw) -> dict:
+        if self.state['account_id'] is None:
+            raise ConfigError('not synced; call connect() or sync() first')
+        return _orders.build_order(
+            account_id=self.state['account_id'],
+            account_spec=self.state['account_spec'],
+            action=action,
+            symbol=symbol,
+            qty=qty,
+            order_type=order_type,
+            **kw,
+        )
+
+    def _order_request(self, endpoint, body) -> Any:
+        """Send an order and check the result Tradovate puts in the payload.
+
+        The socket answers status 200 and reports the outcome in
+        ``failureReason``, exactly as REST does, so a delivered request is not
+        an accepted order.
+        """
+        return raise_for_result(self.request(endpoint, body=body), endpoint=endpoint)
 
     def place(self, *, action, symbol, qty, order_type, **kw) -> Any:
         """Place an order over the socket.
@@ -510,18 +412,10 @@ class TradovateSocket:
         caller simply did not set a field is a good way to get a confusing
         rejection.
         """
-        if self.state['account_id'] is None:
-            raise ConfigError('not synced; call connect() or sync() first')
-        body = _orders.build_order(
-            account_id=self.state['account_id'],
-            account_spec=self.state['account_spec'],
-            action=action,
-            symbol=symbol,
-            qty=qty,
-            order_type=order_type,
-            **kw,
+        body = self._order_body(
+            action=action, symbol=symbol, qty=qty, order_type=order_type, **kw
         )
-        return self.request('order/placeorder', body=body)
+        return self._order_request('order/placeorder', body)
 
     def market(self, action, symbol, qty, **kw) -> Any:
         return self.place(
@@ -559,11 +453,135 @@ class TradovateSocket:
             **kw,
         )
 
+    @staticmethod
+    def bracket_leg(action, order_type, **kw) -> dict:
+        """Build one child leg for ``place_oso`` or ``place_oco``."""
+        return _orders.build_bracket_leg(action=action, order_type=order_type, **kw)
+
+    def place_oco(self, *, action, symbol, qty, order_type, other, **kw) -> Any:
+        """One-cancels-other. ``other`` comes from ``bracket_leg``."""
+        body = self._order_body(
+            action=action, symbol=symbol, qty=qty, order_type=order_type, **kw
+        )
+        body['other'] = other
+        return self._order_request('order/placeoco', body)
+
+    def place_oso(
+        self, *, action, symbol, qty, order_type, bracket1, bracket2=None, **kw
+    ) -> Any:
+        """One-sends-other: an entry with one or two child orders attached."""
+        body = self._order_body(
+            action=action, symbol=symbol, qty=qty, order_type=order_type, **kw
+        )
+        body['bracket1'] = bracket1
+        if bracket2 is not None:
+            body['bracket2'] = bracket2
+        return self._order_request('order/placeoso', body)
+
+    def bracketed_market(
+        self, action, symbol, qty, *, take_profit=None, stop_loss=None, **kw
+    ) -> Any:
+        """A market entry with a profit target and a protective stop attached.
+
+        Both child prices are the caller's own. This library never invents a
+        stop distance or a target.
+        """
+        if take_profit is None and stop_loss is None:
+            raise ConfigError('give take_profit=, stop_loss=, or both')
+        exit_side = Action(action).opposite
+        legs = []
+        if take_profit is not None:
+            legs.append(self.bracket_leg(exit_side, OrderType.LIMIT, price=take_profit))
+        if stop_loss is not None:
+            legs.append(
+                self.bracket_leg(exit_side, OrderType.STOP, stop_price=stop_loss)
+            )
+        return self.place_oso(
+            action=action,
+            symbol=symbol,
+            qty=qty,
+            order_type=OrderType.MARKET,
+            bracket1=legs[0],
+            bracket2=legs[1] if len(legs) > 1 else None,
+            **kw,
+        )
+
+    def start_order_strategy(
+        self,
+        action,
+        symbol,
+        *,
+        order_strategy_type_id,
+        params=None,
+        uuid=None,
+        custom_tag_50=None,
+    ) -> Any:
+        """Start a Tradovate order strategy over the socket.
+
+        This is the transport Tradovate's own examples use for
+        ``orderStrategy/startOrderStrategy``.
+        """
+        if self.state['account_id'] is None:
+            raise ConfigError('not synced; call connect() or sync() first')
+        body = _orders.build_order_strategy(
+            account_id=self.state['account_id'],
+            account_spec=self.state['account_spec'],
+            action=action,
+            symbol=symbol,
+            order_strategy_type_id=order_strategy_type_id,
+            params=params,
+            uuid=uuid,
+            custom_tag_50=custom_tag_50,
+        )
+        return _strategy_result(
+            self.request('orderStrategy/startorderstrategy', body=body)
+        )
+
+    def bracket_strategy(self, action, symbol, qty, *, brackets, **entry) -> Any:
+        """A bracket order strategy: an entry and the brackets that manage it.
+
+        ``brackets`` is yours; see ``build_bracket_params`` for the shape.
+        """
+        return self.start_order_strategy(
+            action,
+            symbol,
+            order_strategy_type_id=_orders.BRACKET_STRATEGY_TYPE_ID,
+            params=_orders.build_bracket_params(qty=qty, brackets=brackets, **entry),
+        )
+
+    def modify(self, order_id, **kw) -> Any:
+        """Change a working order.
+
+        ``modifyorder`` replaces the order, so the size and type go back with
+        every call. Whatever is not passed is read off the order's current
+        version -- from the streamed state when it is held, otherwise with one
+        request.
+        """
+        current = None
+        if kw.get('qty') is None or kw.get('order_type') is None:
+            current = self.state['order_versions'].get(int(order_id))
+            if current is None:
+                versions = self.request(
+                    'orderVersion/deps', 'masterid=%d' % int(order_id)
+                )
+                if isinstance(versions, list) and versions:
+                    current = versions[-1] or {}
+        body = _orders.build_modify(order_id, current=current, **kw)
+        return self._order_request('order/modifyorder', body)
+
     def cancel(self, order_id, *, is_automated=True) -> Any:
         return self.request(
             'order/cancelorder',
             body={'orderId': int(order_id), 'isAutomated': bool(is_automated)},
         )
+
+    def cancel_working(self) -> list[int]:
+        """Cancel this account's working orders. Returns the ids it cancelled."""
+        cancelled = []
+        for order in self.working_orders():
+            self.cancel(order.id)
+            cancelled.append(order.id)
+        return cancelled
 
     def liquidate(self, contract_id, *, admin=False) -> Any:
         return self.request(
@@ -581,3 +599,16 @@ class TradovateSocket:
             self.is_connected,
             self.is_authorized,
         )
+
+
+def _strategy_result(reply) -> Any:
+    """Raise if an order-strategy reply carries ``errorText``."""
+    if isinstance(reply, dict) and reply.get('errorText'):
+        raise OrderRejected(
+            'Tradovate refused the order strategy: %s' % reply['errorText'],
+            reason=reply['errorText'],
+            text=reply['errorText'],
+            endpoint='orderStrategy/startorderstrategy',
+            body=reply,
+        )
+    return reply

@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tradovate-client"
-version = "0.1.0"
-description = "A Tradovate API client for Python: token renewal, every order type, no dependencies."
+version = "0.2.0"
+description = "A Tradovate API client for Python: REST, the user socket and market data, with token renewal and reconnection."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
 authors = [{ name = "QuantQJ" }]
-keywords = ["tradovate", "futures", "trading", "broker", "api", "cme"]
+keywords = ["tradovate", "futures", "trading", "broker", "api", "cme", "websocket", "market-data"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",

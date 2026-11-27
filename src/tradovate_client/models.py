@@ -18,6 +18,10 @@ __all__ = [
     'Product',
     'Snapshot',
     'PositionView',
+    'ContractMaturity',
+    'MarginSnapshot',
+    'AutoLiq',
+    'OrderStrategy',
 ]
 
 
@@ -47,9 +51,21 @@ class Account:
 
 @dataclass
 class CashBalance:
+    """Tradovate's cash balance snapshot.
+
+    The first three fields are always numbers. The rest are None when
+    Tradovate did not send them, so an absent margin figure is not mistaken
+    for a margin of zero.
+    """
+
     total_cash: float = 0.0
     open_pnl: float = 0.0
     realized_pnl: float = 0.0
+    net_liq: "float | None" = None
+    total_pnl: "float | None" = None
+    initial_margin: "float | None" = None
+    maintenance_margin: "float | None" = None
+    week_realized_pnl: "float | None" = None
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -59,6 +75,11 @@ class CashBalance:
             total_cash=_f(d.get('totalCashValue')),
             open_pnl=_f(d.get('openPnL')),
             realized_pnl=_f(d.get('realizedPnL')),
+            net_liq=_opt(d.get('netLiq')),
+            total_pnl=_opt(d.get('totalPnL')),
+            initial_margin=_opt(d.get('initialMargin')),
+            maintenance_margin=_opt(d.get('maintenanceMargin')),
+            week_realized_pnl=_opt(d.get('weekRealizedPnL')),
             raw=d,
         )
 
@@ -67,11 +88,142 @@ class CashBalance:
 class Contract:
     id: int
     name: str
+    contract_maturity_id: "int | None" = None
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_api(cls, d) -> "Contract":
-        return cls(id=d['id'], name=d.get('name') or str(d['id']), raw=d)
+        return cls(
+            id=d['id'],
+            name=d.get('name') or str(d['id']),
+            contract_maturity_id=d.get('contractMaturityId'),
+            raw=d,
+        )
+
+
+@dataclass
+class ContractMaturity:
+    """When a contract expires, and whether it is the front month."""
+
+    id: int
+    product_id: "int | None" = None
+    expiration_month: "int | None" = None
+    expiration_date: str = ''
+    first_intent_date: str = ''
+    is_front: bool = False
+    raw: dict = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_api(cls, d) -> "ContractMaturity":
+        return cls(
+            id=d.get('id'),
+            product_id=d.get('productId'),
+            expiration_month=d.get('expirationMonth'),
+            expiration_date=d.get('expirationDate') or '',
+            first_intent_date=d.get('firstIntentDate') or '',
+            is_front=bool(d.get('isFront')),
+            raw=d,
+        )
+
+
+@dataclass
+class MarginSnapshot:
+    """Tradovate's margin figures, as it reports them."""
+
+    id: int
+    timestamp: str = ''
+    initial_margin: "float | None" = None
+    maintenance_margin: "float | None" = None
+    auto_liq_level: "float | None" = None
+    liq_only_level: "float | None" = None
+    total_used_margin: "float | None" = None
+    full_initial_margin: "float | None" = None
+    raw: dict = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_api(cls, d) -> "MarginSnapshot":
+        return cls(
+            id=d.get('id'),
+            timestamp=d.get('timestamp') or '',
+            initial_margin=_opt(d.get('initialMargin')),
+            maintenance_margin=_opt(d.get('maintenanceMargin')),
+            auto_liq_level=_opt(d.get('autoLiqLevel')),
+            liq_only_level=_opt(d.get('liqOnlyLevel')),
+            total_used_margin=_opt(d.get('totalUsedMargin')),
+            full_initial_margin=_opt(d.get('fullInitialMargin')),
+            raw=d,
+        )
+
+
+@dataclass
+class AutoLiq:
+    """The risk limits Tradovate holds for an account (``userAccountAutoLiq``).
+
+    These are the account's own settings, read back. Every one is None when
+    it is not set. The full record, including the percentage and alert
+    thresholds not named here, is on ``raw``.
+    """
+
+    id: int
+    changes_locked: bool = False
+    daily_loss_auto_liq: "float | None" = None
+    weekly_loss_auto_liq: "float | None" = None
+    daily_profit_auto_liq: "float | None" = None
+    weekly_profit_auto_liq: "float | None" = None
+    trailing_max_drawdown: "float | None" = None
+    trailing_max_drawdown_limit: "float | None" = None
+    flatten_timestamp: str = ''
+    raw: dict = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_api(cls, d) -> "AutoLiq":
+        return cls(
+            id=d.get('id'),
+            changes_locked=bool(d.get('changesLocked')),
+            daily_loss_auto_liq=_opt(d.get('dailyLossAutoLiq')),
+            weekly_loss_auto_liq=_opt(d.get('weeklyLossAutoLiq')),
+            daily_profit_auto_liq=_opt(d.get('dailyProfitAutoLiq')),
+            weekly_profit_auto_liq=_opt(d.get('weeklyProfitAutoLiq')),
+            trailing_max_drawdown=_opt(d.get('trailingMaxDrawdown')),
+            trailing_max_drawdown_limit=_opt(d.get('trailingMaxDrawdownLimit')),
+            flatten_timestamp=d.get('flattenTimestamp') or '',
+            raw=d,
+        )
+
+
+@dataclass
+class OrderStrategy:
+    """A running or finished order strategy."""
+
+    id: int
+    account_id: "int | None" = None
+    contract_id: "int | None" = None
+    order_strategy_type_id: "int | None" = None
+    action: str = ''
+    status: str = ''
+    failure_message: str = ''
+    params: str = ''
+    uuid: str = ''
+    raw: dict = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def from_api(cls, d) -> "OrderStrategy":
+        return cls(
+            id=d.get('id'),
+            account_id=d.get('accountId'),
+            contract_id=d.get('contractId'),
+            order_strategy_type_id=d.get('orderStrategyTypeId'),
+            action=d.get('action') or '',
+            status=d.get('status') or '',
+            failure_message=d.get('failureMessage') or '',
+            params=d.get('params') or '',
+            uuid=d.get('uuid') or '',
+            raw=d,
+        )
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == 'ActiveStrategy'
 
 
 @dataclass

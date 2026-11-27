@@ -166,15 +166,46 @@ class TokenStore:
             expires = 0.0
         return (token, expires) if token else (None, 0.0)
 
+    def read_md(self) -> tuple[str | None, float]:
+        """Return ``(market data token, expires_at)`` or ``(None, 0.0)``.
+
+        Tradovate's authentication reply carries ``mdAccessToken`` beside the
+        access token; their own examples authorize the market data socket
+        with it.
+        """
+        try:
+            data = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return None, 0.0
+        if data.get('env') and data['env'] != self.env.value:
+            return None, 0.0
+        if self.login and data.get('login') not in (None, _login_key(self.login)):
+            return None, 0.0
+        token = data.get('mdAccessToken')
+        try:
+            expires = float(data.get('md_expires_at') or 0.0)
+        except (TypeError, ValueError):
+            expires = 0.0
+        return (token, expires) if token else (None, 0.0)
+
     def write(self, reply) -> str:
         """Persist Tradovate's auth reply. Returns the access token."""
         token = reply.get('accessToken')
         if not token:
             raise AuthError('authentication reply carried no accessToken', body=reply)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        expires_at = _expiry_of(reply, self._clock)
+        md_token, md_expires_at = reply.get('mdAccessToken'), expires_at
+        if not md_token:
+            # A renewal reply may not carry a market data token. Keep the one
+            # already held, with the expiry it was issued with, rather than
+            # throwing it away or pretending it was renewed.
+            md_token, md_expires_at = self.read_md()
         payload = {
             'accessToken': token,
-            'expires_at': _expiry_of(reply, self._clock),
+            'expires_at': expires_at,
+            'mdAccessToken': md_token,
+            'md_expires_at': md_expires_at if md_token else None,
             'userId': reply.get('userId'),
             'env': self.env.value,
             'login': _login_key(self.login) if self.login else None,
