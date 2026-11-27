@@ -143,6 +143,7 @@ class Wire:
         self._pending: dict[Any, dict] = {}
         self._opened = threading.Event()
         self._authorized = threading.Event()
+        self._authorize_answered = threading.Event()
         self._authorize_id: int | None = None
         self._authorize_status: Any = None
         self._stop = False
@@ -295,11 +296,20 @@ class Wire:
             request_id = self._next
             self._authorize_id = request_id
             self._authorize_status = None
+            self._authorize_answered.clear()
         self._send_raw('authorize\n%d\n\n%s' % (request_id, token))
-        if not self._authorized.wait(self.connect_timeout):
+        if not self._authorize_answered.wait(self.connect_timeout):
             raise TransportError(
                 'Tradovate did not accept the socket authorization within %ss'
                 % self.connect_timeout,
+                endpoint='authorize',
+            )
+        if not self._authorized.is_set():
+            # It answered, and the answer was no. Say so at once rather than
+            # waiting out the timeout for an acceptance that is not coming.
+            raise TransportError(
+                'Tradovate did not accept the socket authorization (status %s)'
+                % self._authorize_status,
                 endpoint='authorize',
                 status=self._authorize_status,
             )
@@ -407,6 +417,7 @@ class Wire:
                     self._authorized.set()
                 else:
                     self._authorized.clear()
+                self._authorize_answered.set()
                 return
             with self._lock:
                 entry = self._pending.get(request_id)

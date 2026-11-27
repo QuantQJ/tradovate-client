@@ -48,6 +48,8 @@ Market data, sockets that stay up, and penalties handled everywhere.
   `POST` is waited out and sent again with the ticket, and so is any socket
   request. A penalised `GET` raises `TimePenalty`. Before this a penalty reply
   to an ordinary call was returned as if it were the result.
+- A socket authorization Tradovate refuses is reported at once, with its
+  status, instead of after the connect timeout.
 - Order strategies: `bracket_strategy`, `start_order_strategy`,
   `interrupt_order_strategy`, `order_strategies`.
 - Contracts: `suggest_contracts`, `roll_contract`, `contract_maturity`.

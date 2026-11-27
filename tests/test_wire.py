@@ -418,3 +418,22 @@ def test_closing_retires_a_reconnect_that_was_still_waiting():
     finally:
         gate.set()
         s.close()
+
+
+def test_a_refused_authorization_is_reported_at_once():
+    """Tradovate answered, and the answer was no: do not wait out the timeout."""
+    import time
+
+    refused = FakeServer({'account/list': [ACCOUNT]}, authorize_status=401)
+    s = TradovateSocket(
+        Env.DEMO,
+        client=FakeRest(),
+        ws=refused,
+        connect_timeout=30.0,
+        heartbeat_interval=0.01,
+    )
+    started = time.time()
+    with pytest.raises(TransportError, match='status 401') as caught:
+        s.connect()
+    assert time.time() - started < 5.0
+    assert caught.value.status == 401
