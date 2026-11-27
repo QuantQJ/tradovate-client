@@ -13,7 +13,9 @@ concurrency:
 jobs:
   test:
     name: tests (py${{ matrix.python }})
-    runs-on: ubuntu-latest
+    # setup-python has no Python 3.9 build for the newest runner image, so
+    # the oldest supported version is tested on the image that still has one.
+    runs-on: ${{ matrix.python == '3.9' && 'ubuntu-24.04' || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
